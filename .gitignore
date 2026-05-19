@@ -216,3 +216,11 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+
+# Private content — not open-source
+content/
+
+
+# macOS metadata
+.DS_Store
