@@ -1,0 +1,40 @@
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: the_brain
+      POSTGRES_USER: the_brain
+      POSTGRES_PASSWORD: the_brain
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U the_brain -d the_brain"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  brain:
+    build: .
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_NAME: the_brain
+      DB_USER: the_brain
+      DB_PASSWORD: the_brain
+      # Memory Vault — point at a reachable instance. Use host.docker.internal
+      # to reach a Memory Vault running on the host, outside this compose.
+      MEMORY_VAULT_URL: ${MEMORY_VAULT_URL:-http://host.docker.internal:8000}
+      MEMORY_VAULT_TOKEN: ${MEMORY_VAULT_TOKEN:-}
+      # Local LLM — OpenAI-compatible endpoint (LM Studio on the host).
+      LLM_BASE_URL: ${LLM_BASE_URL:-http://host.docker.internal:1234/v1}
+      LLM_API_KEY: ${LLM_API_KEY:-lm-studio}
+      LLM_MODEL: ${LLM_MODEL:-}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+
+volumes:
+  pgdata:
