@@ -18,7 +18,7 @@ A workflow file is a plain Python file that defines a module-level
 Each step type maps to one integration. Step ``config`` is validated at
 authoring time by these models — a typo fails when the file is loaded,
 not mid-run. A ``{step_name}`` placeholder in a field is stored verbatim
-here; the runner (sub-step 6) substitutes prior step output.
+here; the runner substitutes prior step output.
 """
 
 from typing import Annotated, Literal
