@@ -133,7 +133,11 @@ async def run_workflow(
             break
 
     ended_at = datetime.now(UTC)
-    output = {name: {"success": r.success, "output": r.output} for name, r in results.items()}
+    # An ordered list — one entry per step that ran, in execution order.
+    # A JSON object would not preserve order; the order is part of the data.
+    output = [
+        {"name": name, "success": r.success, "output": r.output} for name, r in results.items()
+    ]
 
     await execute_query(
         """

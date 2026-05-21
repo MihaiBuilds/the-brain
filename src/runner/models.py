@@ -13,9 +13,10 @@ from pydantic import BaseModel
 class WorkflowRun(BaseModel):
     """One workflow execution, as stored in the ``workflow_runs`` table.
 
-    ``output`` is a dict keyed by step name — each value is that step's
-    ``{success, output}``. It is populated as steps complete, so a failed
-    run still carries the results of the steps that ran before the failure.
+    ``output`` is an ordered list — one entry per step that ran, in
+    execution order, each ``{name, success, output}``. It is populated
+    as steps complete, so a failed run still carries the results of the
+    steps that ran before the failure.
     """
 
     id: UUID
@@ -24,5 +25,5 @@ class WorkflowRun(BaseModel):
     started_at: datetime
     ended_at: datetime | None = None
     status: str
-    output: dict[str, dict] | None = None
+    output: list[dict] | None = None
     error: str | None = None
