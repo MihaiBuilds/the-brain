@@ -15,6 +15,7 @@ fails that step rather than leaking literal braces downstream.
 import json
 import logging
 import re
+from collections.abc import Callable
 from datetime import UTC, datetime
 from uuid import uuid4
 
@@ -67,7 +68,11 @@ def _resolve_step(step: Step, results: dict[str, StepResult]) -> Step:
     return step.model_copy(update=updates) if updates else step
 
 
-async def run_workflow(workflow: Workflow, file_path: str) -> WorkflowRun:
+async def run_workflow(
+    workflow: Workflow,
+    file_path: str,
+    on_step_complete: Callable[[StepResult], None] | None = None,
+) -> WorkflowRun:
     """Run a workflow end to end and persist the result.
 
     Inserts a ``running`` row, executes steps in order, and halts on the
@@ -77,6 +82,10 @@ async def run_workflow(workflow: Workflow, file_path: str) -> WorkflowRun:
     Args:
         workflow: the validated workflow to run.
         file_path: the path the workflow was loaded from, stored on the row.
+        on_step_complete: optional callback invoked with each step's
+            ``StepResult`` as it finishes — used for live progress output.
+            Library callers can omit it; the runner stays unaware of any
+            terminal or transport.
 
     Returns:
         The persisted WorkflowRun with its terminal status and output.
@@ -115,6 +124,8 @@ async def run_workflow(workflow: Workflow, file_path: str) -> WorkflowRun:
                 )
 
         results[step.name] = result
+        if on_step_complete is not None:
+            on_step_complete(result)
         if not result.success:
             status = "failed"
             error = f"step {step.name!r} failed: {result.error}"
