@@ -9,6 +9,7 @@ WORKDIR /app
 COPY pyproject.toml ./
 COPY src/ ./src/
 COPY migrations/ ./migrations/
+COPY examples/ ./examples/
 COPY scripts/start.sh ./scripts/start.sh
 
 ENV PYTHONPATH=/app
