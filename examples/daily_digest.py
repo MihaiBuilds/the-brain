@@ -1,6 +1,6 @@
 """Example workflow — pull recent memories, summarize them, save to a file.
 
-Run it with:  brain run examples/daily_digest.py   (available from sub-step 7)
+Run it with:  brain run examples/daily_digest.py
 """
 
 from src.workflow import LLMStep, MemoryVaultStep, ShellStep, Workflow
