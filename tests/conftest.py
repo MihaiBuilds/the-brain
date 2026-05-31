@@ -88,9 +88,15 @@ def _run_migrations() -> None:
 
 @pytest.fixture(autouse=True)
 def _clean_tables(_test_database):
-    """Truncate ``workflow_runs`` before every test (synchronous)."""
+    """Truncate per-test tables before every test (synchronous).
+
+    CASCADE handles the self-FK on ``workflow_runs.previous_run_id`` and
+    the FK from ``workflow_schedules.last_run_id``.
+    """
     with psycopg.connect(TEST_DSN, autocommit=True) as conn:
-        conn.execute("TRUNCATE workflow_runs RESTART IDENTITY CASCADE")
+        conn.execute(
+            "TRUNCATE workflow_runs, workflow_schedules, daemon_heartbeats RESTART IDENTITY CASCADE"
+        )
     yield
 
 
