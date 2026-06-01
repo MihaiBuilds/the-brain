@@ -13,6 +13,7 @@ The Brain — command-line interface.
     brain unregister  Hard-delete a schedule
     brain daemon      Run the scheduler daemon (long-running)
     brain daemon-status  Check whether the daemon is healthy (exit 0 if yes)
+    brain serve       Run the HTTP API (long-running, requires THE_BRAIN_API_TOKEN)
 """
 
 import asyncio
@@ -501,6 +502,33 @@ async def _daemon_status() -> None:
         raise SystemExit(1)
 
     click.echo(f"healthy: last tick {age_seconds:.0f}s ago (daemon {short_id})")
+
+
+@cli.command()
+@click.option("--port", default=8001, show_default=True, help="HTTP port to bind.")
+@click.option("--host", default="0.0.0.0", show_default=True, help="Interface to bind.")
+def serve(port: int, host: str) -> None:
+    """Run the HTTP API.
+
+    Long-running process. Exposes ``POST /run`` for executing workflows
+    via HTTP. Bearer token is required via the ``THE_BRAIN_API_TOKEN``
+    environment variable; the server refuses to start without it.
+
+    This is a separate process from the scheduler daemon — by design.
+    Run it in its own container behind the ``api`` compose profile:
+    ``docker compose --profile api up -d``.
+    """
+    import uvicorn
+
+    from src.api import create_app
+
+    try:
+        app = create_app()
+    except RuntimeError as e:
+        click.echo(f"Error: {e}", err=True)
+        raise SystemExit(1) from e
+
+    uvicorn.run(app, host=host, port=port, log_level="info")
 
 
 def main() -> None:
