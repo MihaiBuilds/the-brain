@@ -12,6 +12,7 @@ The Brain — command-line interface.
     brain enable      Re-enable a schedule
     brain unregister  Hard-delete a schedule
     brain daemon      Run the scheduler daemon (long-running)
+    brain daemon-status  Check whether the daemon is healthy (exit 0 if yes)
 """
 
 import asyncio
@@ -457,6 +458,49 @@ async def _daemon() -> None:
         await run_daemon()
     finally:
         await close_pool()
+
+
+HEARTBEAT_STALE_SECONDS = 30
+
+
+@cli.command(name="daemon-status")
+def daemon_status() -> None:
+    """Check whether the scheduler daemon is healthy.
+
+    Reads the most recent heartbeat from ``daemon_heartbeats`` and exits 0
+    if it was written within the last 30 seconds. Designed for use as a
+    Docker healthcheck; also useful interactively.
+    """
+    asyncio.run(_daemon_status())
+
+
+async def _daemon_status() -> None:
+    from src.db import close_pool, fetch_one, init_pool
+
+    await init_pool()
+    try:
+        heartbeat = await fetch_one(
+            "SELECT daemon_id, last_tick_at FROM daemon_heartbeats "
+            "ORDER BY last_tick_at DESC LIMIT 1"
+        )
+    finally:
+        await close_pool()
+
+    if heartbeat is None:
+        click.echo("unhealthy: no heartbeat row — daemon has never started")
+        raise SystemExit(1)
+
+    age_seconds = (datetime.now(UTC) - heartbeat["last_tick_at"]).total_seconds()
+    short_id = heartbeat["daemon_id"][:12]
+
+    if age_seconds > HEARTBEAT_STALE_SECONDS:
+        click.echo(
+            f"unhealthy: last tick {age_seconds:.0f}s ago "
+            f"(threshold {HEARTBEAT_STALE_SECONDS}s, daemon {short_id})"
+        )
+        raise SystemExit(1)
+
+    click.echo(f"healthy: last tick {age_seconds:.0f}s ago (daemon {short_id})")
 
 
 def main() -> None:

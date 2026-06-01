@@ -54,15 +54,16 @@ cd the-brain
 docker compose up -d
 ```
 
-This starts two containers: Postgres and The Brain. On boot, The Brain waits for the database, applies migrations automatically, and prints its status. The Brain container then stays alive so you can run CLI commands against it — at this stage there is no long-running service, the container's job is to host the `brain` CLI.
+This starts two containers: Postgres and The Brain. On boot, The Brain waits for the database, applies migrations, prints its status, and then runs the **scheduler daemon** — the long-running process that polls registered workflows every 10 seconds and fires the ones that are due. CLI commands run against the same container via `docker compose exec brain ...` as separate processes; they share the database with the daemon, no handshake needed.
 
 Check it came up cleanly:
 
 ```bash
 docker compose exec brain brain status
+docker compose exec brain brain daemon-status
 ```
 
-You should see the database connection and one applied migration.
+The first shows the database connection and applied migrations. The second confirms the daemon has ticked recently — it exits 0 when the daemon is healthy, 1 otherwise. Docker uses the same command as its healthcheck.
 
 > After pulling new changes, rebuild the image with `docker compose up -d --build` — otherwise Compose reuses the previously built image and your update is not picked up.
 

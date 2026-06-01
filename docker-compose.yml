@@ -22,6 +22,7 @@ services:
     depends_on:
       db:
         condition: service_healthy
+    restart: unless-stopped
     environment:
       DB_HOST: db
       DB_PORT: 5432
@@ -37,6 +38,16 @@ services:
       LLM_API_KEY: ${LLM_API_KEY:-lm-studio}
       LLM_MODEL: ${LLM_MODEL:-}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    # Healthcheck — `brain daemon-status` reads daemon_heartbeats.last_tick_at
+    # and exits 0 only if the daemon has ticked within the last 30 seconds.
+    # start_period covers migrations + the first tick before the healthcheck
+    # starts gating restarts.
+    healthcheck:
+      test: ["CMD", "brain", "daemon-status"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
 
 volumes:
   pgdata:
