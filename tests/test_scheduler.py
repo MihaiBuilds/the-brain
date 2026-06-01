@@ -297,6 +297,80 @@ async def test_recover_orphans_is_a_noop_when_no_running_rows_exist(db_pool):
     assert recovered == 0
 
 
+def _seed_heartbeat(daemon_id_value, last_tick_at, started_at=None):
+    """Insert a heartbeat row directly. Used by daemon-status tests."""
+    with psycopg.connect(_DSN, autocommit=True) as conn:
+        conn.execute(
+            """
+            INSERT INTO daemon_heartbeats (daemon_id, started_at, last_tick_at)
+            VALUES (%s, %s, %s)
+            """,
+            (daemon_id_value, started_at or last_tick_at, last_tick_at),
+        )
+
+
+# ---------------------------------------------------------------------------
+# brain daemon-status — healthcheck command
+# ---------------------------------------------------------------------------
+
+
+def test_daemon_status_exits_one_when_no_heartbeat_row_exists():
+    """A daemon that has never started has no row to read."""
+    from click.testing import CliRunner
+
+    from src.cli import cli
+
+    result = CliRunner().invoke(cli, ["daemon-status"])
+    assert result.exit_code == 1
+    assert "no heartbeat row" in result.output
+
+
+def test_daemon_status_exits_zero_when_heartbeat_is_recent():
+    """A heartbeat within the 30-second threshold is healthy."""
+    from click.testing import CliRunner
+
+    from src.cli import cli
+
+    recent = datetime.now(UTC) - timedelta(seconds=5)
+    _seed_heartbeat("test-daemon", recent)
+
+    result = CliRunner().invoke(cli, ["daemon-status"])
+    assert result.exit_code == 0, result.output
+    assert "healthy" in result.output
+    assert "test-daemon" in result.output
+
+
+def test_daemon_status_exits_one_when_heartbeat_is_stale():
+    """A heartbeat older than 30s means the daemon died or hung."""
+    from click.testing import CliRunner
+
+    from src.cli import cli
+
+    stale = datetime.now(UTC) - timedelta(seconds=120)
+    _seed_heartbeat("test-daemon", stale)
+
+    result = CliRunner().invoke(cli, ["daemon-status"])
+    assert result.exit_code == 1
+    assert "unhealthy" in result.output
+    assert "120s ago" in result.output or "121s ago" in result.output
+
+
+def test_daemon_status_uses_most_recent_heartbeat_if_multiple_rows_exist():
+    """If a daemon_id ever changes (e.g. container hostname swap), the latest tick wins."""
+    from click.testing import CliRunner
+
+    from src.cli import cli
+
+    stale = datetime.now(UTC) - timedelta(seconds=120)
+    recent = datetime.now(UTC) - timedelta(seconds=5)
+    _seed_heartbeat("old-daemon", stale)
+    _seed_heartbeat("new-daemon", recent)
+
+    result = CliRunner().invoke(cli, ["daemon-status"])
+    assert result.exit_code == 0, result.output
+    assert "new-daemon" in result.output
+
+
 async def test_recover_orphans_does_not_touch_terminal_rows(db_pool, tmp_path):
     """Already-failed or already-successful rows are untouched."""
     file_path = _write_workflow(tmp_path, "ok.py")
