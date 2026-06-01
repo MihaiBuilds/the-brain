@@ -194,3 +194,33 @@ async def test_previous_and_prior_step_tokens_resolve_in_same_step(db_pool):
     row = await _fetch_run(result.id)
     combine = next(s for s in row["output"] if s["name"] == "combine")
     assert combine["output"] == "y=banked t=fresh"
+
+
+async def test_previous_resolves_correct_step_when_previous_run_had_many_steps(db_pool):
+    """A successful run with N steps exposes ALL of them to {previous.X} — pick the right one."""
+    await run_workflow(
+        Workflow(
+            name="multi",
+            steps=[
+                ShellStep(name="alpha", command="echo from-alpha"),
+                ShellStep(name="bravo", command="echo from-bravo"),
+                ShellStep(name="charlie", command="echo from-charlie"),
+            ],
+        ),
+        "multi.py",
+    )
+
+    # The follow-up run reads exactly one of the previous run's steps —
+    # the lookup must find it among siblings, not just return the first.
+    result = await run_workflow(
+        Workflow(
+            name="multi",
+            steps=[ShellStep(name="reader", command="echo got {previous.bravo}")],
+        ),
+        "multi.py",
+    )
+
+    assert result.status == "success"
+    row = await _fetch_run(result.id)
+    reader = next(s for s in row["output"] if s["name"] == "reader")
+    assert reader["output"] == "got from-bravo"
