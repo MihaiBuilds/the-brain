@@ -11,6 +11,7 @@ The Brain — command-line interface.
     brain disable     Soft-disable a schedule (the daemon will skip it)
     brain enable      Re-enable a schedule
     brain unregister  Hard-delete a schedule
+    brain daemon      Run the scheduler daemon (long-running)
 """
 
 import asyncio
@@ -432,6 +433,30 @@ async def _unregister(name: str) -> None:
         raise SystemExit(1)
 
     click.echo(f"Unregistered {name!r}.")
+
+
+@cli.command()
+def daemon() -> None:
+    """Run the scheduler daemon.
+
+    Long-running process. Polls workflow_schedules every 10 seconds, fires
+    due workflows sequentially, advances next_run_at after each fire. On
+    boot, any workflow_runs row still in 'running' status is recovered as
+    a failed run from a previous crash. SIGTERM or SIGINT triggers a
+    graceful shutdown after the current workflow finishes.
+    """
+    asyncio.run(_daemon())
+
+
+async def _daemon() -> None:
+    from src.db import close_pool, init_pool
+    from src.scheduler import run_daemon
+
+    await init_pool()
+    try:
+        await run_daemon()
+    finally:
+        await close_pool()
 
 
 def main() -> None:
