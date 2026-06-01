@@ -371,6 +371,76 @@ def test_daemon_status_uses_most_recent_heartbeat_if_multiple_rows_exist():
     assert "new-daemon" in result.output
 
 
+async def test_skip_on_still_running_drops_fires_that_would_have_landed_while_busy(
+    db_pool, tmp_path
+):
+    """A workflow that takes longer than its cron interval fires once, not N times.
+
+    Models the "skip missed fires" contract: if a workflow is on a 1-minute
+    cron and takes 5 minutes to run, the daemon does NOT queue up 4 backlog
+    fires. After the long run completes, next_run_at advances to the next
+    cron boundary after right-now — the intermediate fires are dropped.
+
+    Sequential single-daemon execution means the long run can't be
+    interrupted; the test verifies the post-run advancement skips ahead
+    rather than catches up.
+    """
+    file_path = _write_workflow(tmp_path, "longrun.py")
+    # Schedule with a 1-minute cron, due at 12:00. Daemon ticks 5 minutes
+    # later, simulating "the previous run took 5 minutes to finish."
+    due_at = datetime(2026, 6, 1, 12, 0, 0, tzinfo=UTC)
+    tick_now = due_at + timedelta(minutes=5)
+    _seed_schedule("longrun", file_path, cron="*/1 * * * *", next_run_at=due_at)
+
+    await daemon_tick(tick_now)
+
+    runs = _fetch_runs_for("longrun")
+    # Exactly one fire — not 5 catch-up fires for the missed minute boundaries.
+    assert len(runs) == 1, f"expected exactly one fire, got {len(runs)}"
+
+    schedule = _fetch_schedule("longrun")
+    # next_run_at jumps to the next cron boundary AFTER tick_now,
+    # not to the next boundary after due_at.
+    assert schedule["next_run_at"] > tick_now
+    assert schedule["next_run_at"] < tick_now + timedelta(minutes=2)
+
+
+async def test_run_daemon_exits_cleanly_when_shutdown_event_is_set(db_pool):
+    """Graceful shutdown: run_daemon's loop terminates when the shutdown event fires.
+
+    Exercises the loop machinery without sending a real signal. The
+    shutdown event is the same one the SIGTERM/SIGINT handler sets;
+    triggering it directly proves the loop checks the event between
+    ticks and exits without waiting out the full 10-second poll.
+    """
+    import asyncio
+
+    from src.scheduler.daemon import run_daemon
+
+    daemon_task = asyncio.create_task(run_daemon())
+
+    # Let one tick land so we know the loop is alive.
+    await asyncio.sleep(0.3)
+    assert not daemon_task.done(), "daemon exited before shutdown was requested"
+
+    # Send SIGTERM to ourselves — the handler installed by run_daemon
+    # sets the shutdown event, which wakes the asyncio.wait_for that's
+    # awaiting either the event or the poll interval.
+    import signal
+
+    signal.raise_signal(signal.SIGTERM)
+
+    # The daemon must finish within a reasonable window. It does NOT need
+    # to wait out the full 10-second poll interval because the shutdown
+    # event is the wait_for target.
+    await asyncio.wait_for(daemon_task, timeout=3.0)
+    assert daemon_task.done()
+    assert daemon_task.exception() is None
+
+    # The heartbeat row is the proof the loop ran at least once.
+    assert _fetch_heartbeat() is not None
+
+
 async def test_recover_orphans_does_not_touch_terminal_rows(db_pool, tmp_path):
     """Already-failed or already-successful rows are untouched."""
     file_path = _write_workflow(tmp_path, "ok.py")
