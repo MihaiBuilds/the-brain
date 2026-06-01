@@ -6,10 +6,16 @@ and always finishes by writing a terminal row — ``success`` or ``failed``.
 
 Placeholder substitution
 ------------------------
-Before a step runs, ``{prior_step_name}`` tokens in its string fields are
-replaced with that prior step's output. Substitution happens here, in the
-runner; executors receive an already-resolved step. An unknown placeholder
-fails that step rather than leaking literal braces downstream.
+Two token shapes are supported in string fields, both resolved here:
+
+- ``{prior_step_name}`` — output of an earlier step in the SAME run.
+- ``{previous.step_name}`` — output of the step with that name in the
+  last SUCCESSFUL run of the same workflow.
+
+Executors receive an already-resolved step. An unknown placeholder fails
+THAT step with a clear error rather than leaking literal braces
+downstream. ``{previous.X}`` with no prior successful run also fails the
+step — strict by design, matching the M1 placeholder voice.
 """
 
 import json
@@ -17,9 +23,9 @@ import logging
 import re
 from collections.abc import Callable
 from datetime import UTC, datetime
-from uuid import uuid4
+from uuid import UUID, uuid4
 
-from src.db import execute_query
+from src.db import execute_query, fetch_one
 from src.executors.base import StepResult, get_executor
 from src.runner.models import WorkflowRun
 from src.workflow.models import Step, Workflow
@@ -37,19 +43,44 @@ _SUBSTITUTABLE_FIELDS: dict[str, tuple[str, ...]] = {
 _PLACEHOLDER = re.compile(r"\{([^{}]+)\}")
 
 
+_PREVIOUS_PREFIX = "previous."
+
+
 class PlaceholderError(Exception):
-    """A step referenced a {placeholder} with no matching prior step."""
+    """A step referenced a {placeholder} with no matching source."""
 
 
-def _substitute(text: str, results: dict[str, StepResult]) -> str:
-    """Replace every {name} in ``text`` with that prior step's output.
+def _substitute(
+    text: str,
+    results: dict[str, StepResult],
+    previous_steps: dict[str, str] | None,
+) -> str:
+    """Replace every ``{name}`` in ``text`` with the resolved value.
+
+    A token starting with ``previous.`` looks up the step name from
+    ``previous_steps`` (a name → output mapping for the last successful
+    run). Any other token looks up a prior step's output in the current
+    run via ``results``.
 
     Raises:
-        PlaceholderError: a token names a step that has not run.
+        PlaceholderError: a token resolves to no source — prior step
+            missing, no previous successful run, or step missing from
+            the previous run.
     """
 
     def replace(match: re.Match[str]) -> str:
         name = match.group(1)
+        if name.startswith(_PREVIOUS_PREFIX):
+            step_name = name[len(_PREVIOUS_PREFIX) :]
+            if previous_steps is None:
+                raise PlaceholderError(
+                    f"unknown placeholder {{{name}}} — no previous successful run of this workflow"
+                )
+            if step_name not in previous_steps:
+                raise PlaceholderError(
+                    f"unknown placeholder {{{name}}} — previous run has no step named {step_name!r}"
+                )
+            return previous_steps[step_name]
         if name not in results:
             raise PlaceholderError(f"unknown placeholder {{{name}}} — no prior step named {name!r}")
         return results[name].output
@@ -57,15 +88,47 @@ def _substitute(text: str, results: dict[str, StepResult]) -> str:
     return _PLACEHOLDER.sub(replace, text)
 
 
-def _resolve_step(step: Step, results: dict[str, StepResult]) -> Step:
+def _resolve_step(
+    step: Step,
+    results: dict[str, StepResult],
+    previous_steps: dict[str, str] | None,
+) -> Step:
     """Return a copy of ``step`` with its string fields substituted."""
     fields = _SUBSTITUTABLE_FIELDS.get(step.type, ())
     updates: dict[str, str] = {}
     for field in fields:
         value = getattr(step, field, None)
         if isinstance(value, str):
-            updates[field] = _substitute(value, results)
+            updates[field] = _substitute(value, results, previous_steps)
     return step.model_copy(update=updates) if updates else step
+
+
+async def _lookup_previous_run(workflow_name: str) -> tuple[UUID | None, dict[str, str] | None]:
+    """Find the most recent successful run of ``workflow_name``.
+
+    Returns ``(run_id, {step_name: output})`` if such a run exists,
+    otherwise ``(None, None)``. The partial index on
+    ``(workflow_name, started_at DESC) WHERE status = 'success'`` makes
+    this an index-only lookup.
+    """
+    row = await fetch_one(
+        """
+        SELECT id, output
+          FROM workflow_runs
+         WHERE workflow_name = %s AND status = 'success'
+         ORDER BY started_at DESC
+         LIMIT 1
+        """,
+        (workflow_name,),
+    )
+    if row is None:
+        return None, None
+
+    previous_steps: dict[str, str] = {}
+    for entry in row["output"] or []:
+        if isinstance(entry, dict) and entry.get("success"):
+            previous_steps[entry["name"]] = entry.get("output", "")
+    return row["id"], previous_steps
 
 
 async def run_workflow(
@@ -93,13 +156,24 @@ async def run_workflow(
     run_id = uuid4()
     started_at = datetime.now(UTC)
 
+    previous_run_id, previous_steps = await _lookup_previous_run(workflow.name)
+    planned_steps = [{"name": s.name, "type": s.type} for s in workflow.steps]
+
     await execute_query(
         """
         INSERT INTO workflow_runs
-            (id, workflow_name, workflow_file_path, started_at, status)
-        VALUES (%s, %s, %s, %s, 'running')
+            (id, workflow_name, workflow_file_path, started_at, status,
+             previous_run_id, planned_steps)
+        VALUES (%s, %s, %s, %s, 'running', %s, %s)
         """,
-        (run_id, workflow.name, file_path, started_at),
+        (
+            run_id,
+            workflow.name,
+            file_path,
+            started_at,
+            previous_run_id,
+            json.dumps(planned_steps),
+        ),
     )
     logger.info("Run %s started — workflow %r", run_id, workflow.name)
 
@@ -109,7 +183,7 @@ async def run_workflow(
 
     for step in workflow.steps:
         try:
-            resolved = _resolve_step(step, results)
+            resolved = _resolve_step(step, results, previous_steps)
         except PlaceholderError as e:
             result = StepResult(step_name=step.name, success=False, error=str(e))
         else:
@@ -158,4 +232,6 @@ async def run_workflow(
         status=status,
         output=output,
         error=error,
+        previous_run_id=previous_run_id,
+        planned_steps=planned_steps,
     )
