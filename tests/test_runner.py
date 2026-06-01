@@ -139,3 +139,51 @@ async def test_callback_fires_for_the_failing_step_then_stops(db_pool):
 
     assert [r.step_name for r in seen] == ["ok", "bad"]
     assert seen[-1].success is False
+
+
+async def test_planned_steps_is_populated_on_row_insert(db_pool):
+    """planned_steps snapshots the full step list at run-creation time."""
+    workflow = Workflow(
+        name="planned",
+        steps=[
+            ShellStep(name="alpha", command="echo a"),
+            ShellStep(name="bravo", command="echo b"),
+            ShellStep(name="charlie", command="echo c"),
+        ],
+    )
+    result = await run_workflow(workflow, "planned.py")
+
+    assert result.planned_steps == [
+        {"name": "alpha", "type": "shell"},
+        {"name": "bravo", "type": "shell"},
+        {"name": "charlie", "type": "shell"},
+    ]
+    row = await _fetch_run(result.id)
+    assert row["planned_steps"] == result.planned_steps
+
+
+async def test_planned_steps_shows_steps_that_never_ran_after_halt(db_pool):
+    """A halted run's planned_steps still names every step, even ones that never executed.
+
+    This is the incident-review disambiguation: output[] shows what ran,
+    planned_steps shows what was supposed to run. A step in planned but not
+    in output means halted-before-reaching, not never-existed.
+    """
+    workflow = Workflow(
+        name="halted",
+        steps=[
+            ShellStep(name="ran", command="echo done"),
+            ShellStep(name="failed", command="exit 1"),
+            ShellStep(name="never-ran", command="echo unreachable"),
+        ],
+    )
+    result = await run_workflow(workflow, "halted.py")
+    assert result.status == "failed"
+
+    row = await _fetch_run(result.id)
+    output_names = {s["name"] for s in row["output"]}
+    planned_names = {s["name"] for s in row["planned_steps"]}
+
+    assert "never-ran" not in output_names
+    assert "never-ran" in planned_names
+    assert planned_names - output_names == {"never-ran"}
