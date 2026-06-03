@@ -1,15 +1,25 @@
 """
 The Brain — command-line interface.
 
-    brain migrate   Run database migrations
-    brain status    Show database connection + migration status
-    brain run       Run a workflow file
-    brain history   List past workflow runs
-    brain show      Show full detail of one run
+    brain migrate     Run database migrations
+    brain status      Show database connection + migration status
+    brain run         Run a workflow file
+    brain history     List past workflow runs
+    brain show        Show full detail of one run
+    brain register    Register a workflow on a cron schedule
+    brain list        List registered schedules
+    brain disable     Soft-disable a schedule (the daemon will skip it)
+    brain enable      Re-enable a schedule
+    brain unregister  Hard-delete a schedule
+    brain daemon      Run the scheduler daemon (long-running)
+    brain daemon-status  Check whether the daemon is healthy (exit 0 if yes)
+    brain serve       Run the HTTP API (long-running, requires THE_BRAIN_API_TOKEN)
 """
 
 import asyncio
 import logging
+from datetime import UTC, datetime
+from pathlib import Path
 
 import click
 
@@ -235,6 +245,290 @@ async def _show(run_id: str) -> None:
             if step_output:
                 for line in step_output.splitlines():
                     click.echo(f"      {line}")
+
+
+# ---------------------------------------------------------------------------
+# Schedule lifecycle commands
+# ---------------------------------------------------------------------------
+
+
+@cli.command()
+@click.argument("workflow_path", type=click.Path())
+@click.option("--cron", "cron_expr", required=True, help="Standard 5-field cron expression.")
+@click.option(
+    "--name",
+    "name_override",
+    help="Register under this name instead of the workflow's own name.",
+)
+def register(workflow_path: str, cron_expr: str, name_override: str | None) -> None:
+    """Register a workflow on a cron schedule.
+
+    WORKFLOW_PATH is a .py file defining a module-level 'workflow'. The cron
+    expression is validated and the workflow file is loaded before the
+    schedule row is inserted. Duplicate names are rejected.
+    """
+    asyncio.run(_register(workflow_path, cron_expr, name_override))
+
+
+async def _register(workflow_path: str, cron_expr: str, name_override: str | None) -> None:
+    from src.db import close_pool, execute_query, fetch_one, init_pool
+    from src.scheduler import CronExpression, InvalidCronError
+    from src.workflow.loader import WorkflowLoadError, import_workflow_from_file
+
+    try:
+        cron = CronExpression.parse(cron_expr)
+    except InvalidCronError as e:
+        click.echo(f"Error: {e}", err=True)
+        raise SystemExit(1) from e
+
+    try:
+        workflow = import_workflow_from_file(workflow_path)
+    except WorkflowLoadError as e:
+        click.echo(f"Error: {e}", err=True)
+        raise SystemExit(1) from e
+
+    name = name_override or workflow.name
+    absolute_path = str(Path(workflow_path).resolve())
+    next_fire = cron.next_fire_after(datetime.now(UTC))
+
+    await init_pool()
+    try:
+        existing = await fetch_one(
+            "SELECT 1 FROM workflow_schedules WHERE workflow_name = %s",
+            (name,),
+        )
+        if existing is not None:
+            click.echo(
+                f"Error: a schedule named {name!r} already exists — "
+                f"use `brain unregister {name}` first, or pass --name to register under a different name",
+                err=True,
+            )
+            raise SystemExit(1)
+
+        await execute_query(
+            """
+            INSERT INTO workflow_schedules
+                (workflow_name, workflow_file_path, cron_expression, next_run_at)
+            VALUES (%s, %s, %s, %s)
+            """,
+            (name, absolute_path, str(cron), next_fire),
+        )
+    finally:
+        await close_pool()
+
+    click.echo(f"Registered {name!r} — next fire {next_fire.strftime('%Y-%m-%d %H:%M:%S %Z')}")
+
+
+@cli.command(name="list")
+@click.option("--enabled", "filter_enabled", is_flag=True, help="Show only enabled schedules.")
+@click.option("--disabled", "filter_disabled", is_flag=True, help="Show only disabled schedules.")
+@click.option("--workflow", "workflow_name", help="Show only the schedule with this name.")
+def list_cmd(filter_enabled: bool, filter_disabled: bool, workflow_name: str | None) -> None:
+    """List registered schedules."""
+    if filter_enabled and filter_disabled:
+        click.echo("Error: --enabled and --disabled are mutually exclusive", err=True)
+        raise SystemExit(1)
+    asyncio.run(_list(filter_enabled, filter_disabled, workflow_name))
+
+
+async def _list(filter_enabled: bool, filter_disabled: bool, workflow_name: str | None) -> None:
+    from src.db import close_pool, fetch_all, init_pool
+
+    clauses: list[str] = []
+    params: list[object] = []
+    if filter_enabled:
+        clauses.append("s.enabled = true")
+    if filter_disabled:
+        clauses.append("s.enabled = false")
+    if workflow_name:
+        clauses.append("s.workflow_name = %s")
+        params.append(workflow_name)
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+
+    await init_pool()
+    try:
+        rows = await fetch_all(
+            f"""
+            SELECT s.workflow_name, s.cron_expression, s.enabled,
+                   s.workflow_file_path, s.next_run_at,
+                   r.started_at AS last_run_at
+              FROM workflow_schedules s
+         LEFT JOIN workflow_runs r ON r.id = s.last_run_id
+            {where}
+          ORDER BY s.workflow_name
+            """,
+            tuple(params),
+        )
+    finally:
+        await close_pool()
+
+    if not rows:
+        click.echo("No schedules found.")
+        return
+
+    click.echo(f"{'NAME':<20}{'CRON':<16}{'ENABLED':<10}{'LAST RUN':<22}{'NEXT FIRE':<22}FILE")
+    for row in rows:
+        last_run = row["last_run_at"].strftime("%Y-%m-%d %H:%M:%S") if row["last_run_at"] else "—"
+        next_fire = row["next_run_at"].strftime("%Y-%m-%d %H:%M:%S") if row["next_run_at"] else "—"
+        enabled = "yes" if row["enabled"] else "no"
+        click.echo(
+            f"{row['workflow_name'][:19]:<20}{row['cron_expression'][:15]:<16}"
+            f"{enabled:<10}{last_run:<22}{next_fire:<22}{row['workflow_file_path']}"
+        )
+
+
+@cli.command()
+@click.argument("name")
+def disable(name: str) -> None:
+    """Soft-disable a schedule. The daemon will skip it on the next tick."""
+    asyncio.run(_set_enabled(name, False))
+
+
+@cli.command()
+@click.argument("name")
+def enable(name: str) -> None:
+    """Re-enable a previously disabled schedule."""
+    asyncio.run(_set_enabled(name, True))
+
+
+async def _set_enabled(name: str, enabled: bool) -> None:
+    from src.db import close_pool, execute_query, init_pool
+
+    await init_pool()
+    try:
+        rowcount = await execute_query(
+            "UPDATE workflow_schedules SET enabled = %s WHERE workflow_name = %s",
+            (enabled, name),
+        )
+    finally:
+        await close_pool()
+
+    if rowcount == 0:
+        click.echo(f"Error: no schedule named {name!r}", err=True)
+        raise SystemExit(1)
+
+    verb = "enabled" if enabled else "disabled"
+    click.echo(f"{name!r} {verb}.")
+
+
+@cli.command()
+@click.argument("name")
+def unregister(name: str) -> None:
+    """Hard-delete a schedule. Past run rows for this workflow are not affected."""
+    asyncio.run(_unregister(name))
+
+
+async def _unregister(name: str) -> None:
+    from src.db import close_pool, execute_query, init_pool
+
+    await init_pool()
+    try:
+        rowcount = await execute_query(
+            "DELETE FROM workflow_schedules WHERE workflow_name = %s",
+            (name,),
+        )
+    finally:
+        await close_pool()
+
+    if rowcount == 0:
+        click.echo(f"Error: no schedule named {name!r}", err=True)
+        raise SystemExit(1)
+
+    click.echo(f"Unregistered {name!r}.")
+
+
+@cli.command()
+def daemon() -> None:
+    """Run the scheduler daemon.
+
+    Long-running process. Polls workflow_schedules every 10 seconds, fires
+    due workflows sequentially, advances next_run_at after each fire. On
+    boot, any workflow_runs row still in 'running' status is recovered as
+    a failed run from a previous crash. SIGTERM or SIGINT triggers a
+    graceful shutdown after the current workflow finishes.
+    """
+    asyncio.run(_daemon())
+
+
+async def _daemon() -> None:
+    from src.db import close_pool, init_pool
+    from src.scheduler import run_daemon
+
+    await init_pool()
+    try:
+        await run_daemon()
+    finally:
+        await close_pool()
+
+
+HEARTBEAT_STALE_SECONDS = 30
+
+
+@cli.command(name="daemon-status")
+def daemon_status() -> None:
+    """Check whether the scheduler daemon is healthy.
+
+    Reads the most recent heartbeat from ``daemon_heartbeats`` and exits 0
+    if it was written within the last 30 seconds. Designed for use as a
+    Docker healthcheck; also useful interactively.
+    """
+    asyncio.run(_daemon_status())
+
+
+async def _daemon_status() -> None:
+    from src.db import close_pool, fetch_one, init_pool
+
+    await init_pool()
+    try:
+        heartbeat = await fetch_one(
+            "SELECT daemon_id, last_tick_at FROM daemon_heartbeats "
+            "ORDER BY last_tick_at DESC LIMIT 1"
+        )
+    finally:
+        await close_pool()
+
+    if heartbeat is None:
+        click.echo("unhealthy: no heartbeat row — daemon has never started")
+        raise SystemExit(1)
+
+    age_seconds = (datetime.now(UTC) - heartbeat["last_tick_at"]).total_seconds()
+    short_id = heartbeat["daemon_id"][:12]
+
+    if age_seconds > HEARTBEAT_STALE_SECONDS:
+        click.echo(
+            f"unhealthy: last tick {age_seconds:.0f}s ago "
+            f"(threshold {HEARTBEAT_STALE_SECONDS}s, daemon {short_id})"
+        )
+        raise SystemExit(1)
+
+    click.echo(f"healthy: last tick {age_seconds:.0f}s ago (daemon {short_id})")
+
+
+@cli.command()
+@click.option("--port", default=8001, show_default=True, help="HTTP port to bind.")
+@click.option("--host", default="0.0.0.0", show_default=True, help="Interface to bind.")
+def serve(port: int, host: str) -> None:
+    """Run the HTTP API.
+
+    Long-running process. Exposes ``POST /run`` for executing workflows
+    via HTTP. Bearer token is required via the ``THE_BRAIN_API_TOKEN``
+    environment variable; the server refuses to start without it.
+
+    This is a separate process from the scheduler daemon — by design.
+    Run it in its own container behind the ``api`` compose profile:
+    ``docker compose --profile api up -d``.
+    """
+    import uvicorn
+
+    from src.api import create_app
+
+    try:
+        app = create_app()
+    except RuntimeError as e:
+        click.echo(f"Error: {e}", err=True)
+        raise SystemExit(1) from e
+
+    uvicorn.run(app, host=host, port=port, log_level="info")
 
 
 def main() -> None:

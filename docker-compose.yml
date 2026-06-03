@@ -22,6 +22,7 @@ services:
     depends_on:
       db:
         condition: service_healthy
+    restart: unless-stopped
     environment:
       DB_HOST: db
       DB_PORT: 5432
@@ -37,6 +38,50 @@ services:
       LLM_API_KEY: ${LLM_API_KEY:-lm-studio}
       LLM_MODEL: ${LLM_MODEL:-}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    # Healthcheck — `brain daemon-status` reads daemon_heartbeats.last_tick_at
+    # and exits 0 only if the daemon has ticked within the last 30 seconds.
+    # start_period covers migrations + the first tick before the healthcheck
+    # starts gating restarts.
+    healthcheck:
+      test: ["CMD", "brain", "daemon-status"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  # HTTP API — opt-in via the `api` profile:
+  #   docker compose --profile api up -d
+  # Separate process from the scheduler daemon by design; both run their
+  # own container against the same database. The brain-api container does
+  # NOT run migrations or the daemon — it depends on the `brain` service
+  # having migrated the database first.
+  brain-api:
+    profiles: ["api"]
+    build: .
+    depends_on:
+      db:
+        condition: service_healthy
+      brain:
+        condition: service_healthy
+    restart: unless-stopped
+    entrypoint: ["brain", "serve", "--host", "0.0.0.0", "--port", "8001"]
+    ports:
+      - "${BRAIN_API_PORT:-8001}:8001"
+    environment:
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_NAME: the_brain
+      DB_USER: the_brain
+      DB_PASSWORD: the_brain
+      MEMORY_VAULT_URL: ${MEMORY_VAULT_URL:-http://host.docker.internal:8000}
+      MEMORY_VAULT_TOKEN: ${MEMORY_VAULT_TOKEN:-}
+      LLM_BASE_URL: ${LLM_BASE_URL:-http://host.docker.internal:1234/v1}
+      LLM_API_KEY: ${LLM_API_KEY:-lm-studio}
+      LLM_MODEL: ${LLM_MODEL:-}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      # The API refuses to start without this token. Set it in .env or
+      # the shell environment before bringing the `api` profile up.
+      THE_BRAIN_API_TOKEN: ${THE_BRAIN_API_TOKEN:-}
 
 volumes:
   pgdata:

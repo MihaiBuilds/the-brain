@@ -17,6 +17,16 @@ class WorkflowRun(BaseModel):
     execution order, each ``{name, success, output}``. It is populated
     as steps complete, so a failed run still carries the results of the
     steps that ran before the failure.
+
+    ``planned_steps`` is the snapshot of the workflow's step list at
+    run-creation time, each ``{name, type}``. It lets postmortem
+    disambiguate "step absent from output because halted before reaching
+    it" from "step never existed in this workflow version."
+
+    ``previous_run_id`` links to the most recent successful run of the
+    same workflow at the moment this run started — populated whenever
+    such a run exists, regardless of whether the workflow used a
+    ``{previous.X}`` placeholder. Enables follow-the-chain postmortem.
     """
 
     id: UUID
@@ -27,3 +37,5 @@ class WorkflowRun(BaseModel):
     status: str
     output: list[dict] | None = None
     error: str | None = None
+    previous_run_id: UUID | None = None
+    planned_steps: list[dict] | None = None

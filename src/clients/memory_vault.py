@@ -55,8 +55,7 @@ class MemoryVaultClient:
                 response.raise_for_status()
         except httpx.HTTPStatusError as e:
             raise MemoryVaultError(
-                f"Memory Vault returned {e.response.status_code} for {url}: "
-                f"{e.response.text[:300]}"
+                f"Memory Vault returned {e.response.status_code} for {url}: {e.response.text[:300]}"
             ) from e
         except httpx.HTTPError as e:
             raise MemoryVaultError(f"could not reach Memory Vault at {url}: {e}") from e

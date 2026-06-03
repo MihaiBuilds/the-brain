@@ -38,10 +38,16 @@ python -m src.cli status
 
 echo ""
 echo "============================================"
-echo "  The Brain is ready"
+echo "  Starting scheduler daemon"
 echo "============================================"
 
-# M1 has no long-running service yet — the container's job is to apply
-# migrations and expose the `brain` CLI. Keep it alive so `docker compose
-# exec brain ...` works for running workflows. The runner service lands in M2.
-exec tail -f /dev/null
+# The daemon is PID 1. It polls workflow_schedules every 10 seconds, fires
+# due workflows sequentially, and writes a heartbeat row that the
+# `brain daemon-status` healthcheck reads. SIGTERM (from `docker stop` or
+# `docker compose down`) triggers a graceful shutdown — the current
+# workflow finishes before the daemon exits.
+#
+# CLI commands continue to work alongside the daemon via
+# `docker compose exec brain brain <command>` — separate processes against
+# the same database, no handshake.
+exec brain daemon
