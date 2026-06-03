@@ -40,8 +40,7 @@ class LLMExecutor:
         except httpx.HTTPStatusError as e:
             return _failure(
                 step.name,
-                f"LLM endpoint returned {e.response.status_code}: "
-                f"{e.response.text[:300]}",
+                f"LLM endpoint returned {e.response.status_code}: {e.response.text[:300]}",
             )
         except httpx.HTTPError as e:
             return _failure(step.name, f"could not reach LLM endpoint at {url}: {e}")
