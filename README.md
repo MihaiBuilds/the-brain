@@ -11,7 +11,7 @@ The Brain ships in five milestones. v1.0 is the full set, M1–M5.
 | Milestone | Scope | Status |
 |-----------|-------|--------|
 | M1 — Bare Runner | Run Python-defined workflows, persist every run to Postgres, inspect run history from the CLI | ✅ Done |
-| M2 — Triggers + State | Cron schedules, a long-running scheduler, workflows that read the previous run's output | 📋 Planned |
+| M2 — Triggers + State | Cron schedules, a long-running scheduler, workflows that read the previous run's output | ✅ Done |
 | M3 — Webhooks + File Watchers | Trigger workflows from HTTP webhooks and filesystem changes | 📋 Planned |
 | M4 — MCP Tools + Multi-LLM | Call any MCP server as a workflow step; pluggable LLM providers | 📋 Planned |
 | M5 — Polish + Launch | CI/CD, security pass, full docs, v1.0 release | 📋 Planned |
@@ -54,15 +54,16 @@ cd the-brain
 docker compose up -d
 ```
 
-This starts two containers: Postgres and The Brain. On boot, The Brain waits for the database, applies migrations automatically, and prints its status. The Brain container then stays alive so you can run CLI commands against it — at this stage there is no long-running service, the container's job is to host the `brain` CLI.
+This starts two containers: Postgres and The Brain. On boot, The Brain waits for the database, applies migrations, prints its status, and then runs the **scheduler daemon** — the long-running process that polls registered workflows every 10 seconds and fires the ones that are due. CLI commands run against the same container via `docker compose exec brain ...` as separate processes; they share the database with the daemon, no handshake needed.
 
 Check it came up cleanly:
 
 ```bash
 docker compose exec brain brain status
+docker compose exec brain brain daemon-status
 ```
 
-You should see the database connection and one applied migration.
+The first shows the database connection and applied migrations. The second confirms the daemon has ticked recently — it exits 0 when the daemon is healthy, 1 otherwise. Docker uses the same command as its healthcheck.
 
 > After pulling new changes, rebuild the image with `docker compose up -d --build` — otherwise Compose reuses the previously built image and your update is not picked up.
 
@@ -207,6 +208,112 @@ Steps:
 ```
 
 This prints the run's status, timing, and every step's output in execution order.
+
+## Run workflows on a schedule
+
+The Quickstart above runs workflows on demand with `brain run`. The Brain also ships a long-running **scheduler daemon** that fires registered workflows on a cron schedule, with no extra setup — the daemon is already running as PID 1 inside the `brain` container, polling for due workflows every 10 seconds.
+
+### 1. Confirm the daemon is healthy
+
+```bash
+docker compose exec brain brain daemon-status
+```
+
+```
+healthy: last tick 8s ago (daemon d3c623efccae)
+```
+
+This exits `0` when the daemon ticked within the last 30 seconds. Docker uses the same command as its container healthcheck.
+
+### 2. Register a workflow on a cron schedule
+
+`brain register` takes a workflow file path and a standard 5-field cron expression. The schedule lives in Postgres next to the run history:
+
+```bash
+docker compose exec brain brain register examples/hello.py --cron "*/1 * * * *"
+```
+
+```
+Registered 'hello' — next fire 2026-06-01 13:12:00 UTC
+```
+
+Registration validates the cron expression, loads the workflow file, and rejects duplicate names — no silent overwrite. Pass `--name X` to register under a different name (handy if you want the same workflow on two schedules).
+
+### 3. List registered schedules
+
+```bash
+docker compose exec brain brain list
+```
+
+```
+NAME                CRON            ENABLED   LAST RUN              NEXT FIRE             FILE
+hello               */1 * * * *     yes       —                     2026-06-01 13:12:00   /app/examples/hello.py
+```
+
+The dash under `LAST RUN` means the workflow has not fired yet. `--enabled` / `--disabled` / `--workflow NAME` filter the list.
+
+### 4. Wait for the daemon to fire it
+
+The daemon polls every 10 seconds, so the first fire lands within ten seconds of the cron boundary. Re-running `brain list` after the next minute shows the schedule's `LAST RUN` populated, and `brain history` shows the run row alongside any `brain run` invocations from the Quickstart:
+
+```bash
+docker compose exec brain brain list
+```
+
+```
+NAME                CRON            ENABLED   LAST RUN              NEXT FIRE             FILE
+hello               */1 * * * *     yes       2026-06-01 13:12:05   2026-06-01 13:13:00   /app/examples/hello.py
+```
+
+```bash
+docker compose exec brain brain history
+```
+
+```
+RUN       WORKFLOW                STATUS    STARTED               DURATION
+c2cae6be  hello                   success   2026-06-01 13:12:05   0.0s
+```
+
+### 5. Disable, enable, unregister
+
+A schedule can be paused without deleting it (`brain disable <name>`) and brought back later (`brain enable <name>`). Both are idempotent — calling them on an already-in-target-state schedule succeeds silently. `brain unregister <name>` deletes the schedule row outright; past run rows are preserved.
+
+```bash
+docker compose exec brain brain disable hello
+```
+
+```
+'hello' disabled.
+```
+
+```bash
+docker compose exec brain brain unregister hello
+```
+
+```
+Unregistered 'hello'.
+```
+
+### Workflows that read their previous run
+
+A scheduled workflow can read the output of its prior successful run via the `{previous.<step_name>}` placeholder — useful for digests that build on themselves, or workflows that diff today's state against yesterday's. [`examples/scheduled_digest.py`](examples/scheduled_digest.py) demonstrates the pattern:
+
+```python
+LLMStep(
+    name="summary",
+    prompt=(
+        "Yesterday's summary:\n{previous.summary}\n\n"
+        "Today's memories:\n{recent}\n\n"
+        "Write today's summary."
+    ),
+)
+```
+
+On the very first run there is no previous successful run, so `{previous.summary}` is unresolvable — that step fails with a clear error, same strict-by-design behavior as M1's intra-run `{step_name}` placeholder. Once one run has succeeded, every subsequent run sees its output.
+
+### Daemon lifecycle
+
+The daemon is just another process in the brain container — `docker compose stop brain` shuts it down gracefully (SIGTERM finishes the currently-running workflow before exit), and `docker compose start brain` brings it back. On boot, any `workflow_runs` row still in `running` status from a previous crash is recovered as a failed run with `error = "daemon restarted with run in progress"`, so the run history stays consistent.
 
 ## Tech
 

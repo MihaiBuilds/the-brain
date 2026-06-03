@@ -20,15 +20,11 @@ class ShellExecutor:
             return _failure(step.name, f"could not start command: {e}")
 
         try:
-            stdout_b, stderr_b = await asyncio.wait_for(
-                proc.communicate(), timeout=step.timeout
-            )
+            stdout_b, stderr_b = await asyncio.wait_for(proc.communicate(), timeout=step.timeout)
         except TimeoutError:
             proc.kill()
             await proc.wait()
-            return _failure(
-                step.name, f"command timed out after {step.timeout}s"
-            )
+            return _failure(step.name, f"command timed out after {step.timeout}s")
 
         stdout = stdout_b.decode(errors="replace").strip()
         stderr = stderr_b.decode(errors="replace").strip()

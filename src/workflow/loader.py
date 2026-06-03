@@ -57,8 +57,7 @@ def import_workflow_from_file(path: str | Path) -> Workflow:
     workflow = module.workflow
     if not isinstance(workflow, Workflow):
         raise WorkflowLoadError(
-            f"'workflow' in {file_path} must be a Workflow instance, "
-            f"got {type(workflow).__name__}"
+            f"'workflow' in {file_path} must be a Workflow instance, got {type(workflow).__name__}"
         )
 
     return workflow

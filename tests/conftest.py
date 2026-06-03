@@ -88,9 +88,15 @@ def _run_migrations() -> None:
 
 @pytest.fixture(autouse=True)
 def _clean_tables(_test_database):
-    """Truncate ``workflow_runs`` before every test (synchronous)."""
+    """Truncate per-test tables before every test (synchronous).
+
+    CASCADE handles the self-FK on ``workflow_runs.previous_run_id`` and
+    the FK from ``workflow_schedules.last_run_id``.
+    """
     with psycopg.connect(TEST_DSN, autocommit=True) as conn:
-        conn.execute("TRUNCATE workflow_runs RESTART IDENTITY CASCADE")
+        conn.execute(
+            "TRUNCATE workflow_runs, workflow_schedules, daemon_heartbeats RESTART IDENTITY CASCADE"
+        )
     yield
 
 
@@ -112,3 +118,28 @@ async def db_pool():
     await init_pool(min_size=1, max_size=5)
     yield
     await close_pool()
+
+
+# ---------------------------------------------------------------------------
+# Clock freezing — for tests that need a deterministic wall clock
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def freeze_clock():
+    """Freeze the wall clock at a caller-supplied moment for the test's duration.
+
+    Most scheduler tests don't need this — ``daemon_tick`` takes ``now`` as
+    a parameter, so they pin time at the call site. The fixture exists for
+    tests that need to mock ``datetime.now()`` itself (e.g. asserting code
+    paths that call it directly, like ``run_daemon``'s loop).
+
+    Usage::
+
+        def test_something(freeze_clock):
+            with freeze_clock(datetime(2026, 6, 1, 12, 0, tzinfo=UTC)):
+                ...
+    """
+    from freezegun import freeze_time
+
+    return freeze_time
