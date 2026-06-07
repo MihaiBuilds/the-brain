@@ -6,16 +6,22 @@ and always finishes by writing a terminal row — ``success`` or ``failed``.
 
 Placeholder substitution
 ------------------------
-Two token shapes are supported in string fields, both resolved here:
+Three token shapes are supported in string fields, all resolved here:
 
 - ``{prior_step_name}`` — output of an earlier step in the SAME run.
 - ``{previous.step_name}`` — output of the step with that name in the
   last SUCCESSFUL run of the same workflow.
+- ``{trigger.body}`` / ``{trigger.headers.X}`` / ``{trigger.event}`` /
+  ``{trigger.path}`` — fields of the trigger_context dict the run was
+  invoked with. Only meaningful for webhook- and file-triggered runs;
+  manual + cron runs have no trigger_context and ``{trigger.X}`` fails
+  the step.
 
 Executors receive an already-resolved step. An unknown placeholder fails
 THAT step with a clear error rather than leaking literal braces
-downstream. ``{previous.X}`` with no prior successful run also fails the
-step — strict by design, matching the M1 placeholder voice.
+downstream. ``{previous.X}`` with no prior successful run, and
+``{trigger.X}`` on a run with no trigger_context, both fail the step —
+strict by design, matching the M1 placeholder voice.
 """
 
 import json
@@ -44,28 +50,87 @@ _PLACEHOLDER = re.compile(r"\{([^{}]+)\}")
 
 
 _PREVIOUS_PREFIX = "previous."
+_TRIGGER_PREFIX = "trigger."
+_TRIGGER_HEADERS_PREFIX = "headers."
 
 
 class PlaceholderError(Exception):
     """A step referenced a {placeholder} with no matching source."""
 
 
+def _resolve_trigger_token(name: str, trigger_context: dict | None) -> str:
+    """Resolve one ``trigger.X`` token to its string value.
+
+    ``name`` is the part after the ``trigger.`` prefix (e.g. ``body``,
+    ``event``, ``path``, ``headers.X-Github-Event``).
+
+    Raises:
+        PlaceholderError: the run has no trigger_context, or the
+            referenced header is absent, or the token name is unknown.
+    """
+    if trigger_context is None:
+        raise PlaceholderError(
+            f"unknown placeholder {{trigger.{name}}} — "
+            "step references trigger data but workflow was not invoked by a trigger"
+        )
+
+    if name == "event":
+        return str(trigger_context.get("event") or "")
+    if name == "path":
+        path = trigger_context.get("path")
+        return str(path) if path is not None else ""
+    if name == "body":
+        body = trigger_context.get("body")
+        if body is None:
+            return ""
+        if isinstance(body, str):
+            return body
+        # Parsed JSON object/array/number/bool — stringify deterministically.
+        return json.dumps(body, sort_keys=True, separators=(",", ":"))
+    if name.startswith(_TRIGGER_HEADERS_PREFIX):
+        header_name = name[len(_TRIGGER_HEADERS_PREFIX) :]
+        if "." in header_name:
+            # `.` is the resolver delimiter; a header name containing one
+            # would be ambiguous with future nested-lookup syntax.
+            raise PlaceholderError(
+                f"unknown placeholder {{trigger.{name}}} — "
+                f"header names containing '.' are not supported"
+            )
+        headers = trigger_context.get("headers") or {}
+        # HTTP headers are case-insensitive per RFC 7230 §3.2.
+        lower = header_name.lower()
+        for key, value in headers.items():
+            if key.lower() == lower:
+                return str(value)
+        raise PlaceholderError(
+            f"unknown placeholder {{trigger.{name}}} — trigger has no header named {header_name!r}"
+        )
+    raise PlaceholderError(
+        f"unknown placeholder {{trigger.{name}}} — trigger has no field named {name!r}"
+    )
+
+
 def _substitute(
     text: str,
     results: dict[str, StepResult],
     previous_steps: dict[str, str] | None,
+    trigger_context: dict | None,
 ) -> str:
     """Replace every ``{name}`` in ``text`` with the resolved value.
 
-    A token starting with ``previous.`` looks up the step name from
-    ``previous_steps`` (a name → output mapping for the last successful
-    run). Any other token looks up a prior step's output in the current
-    run via ``results``.
+    Resolution order in a single regex pass:
+
+    - ``previous.X`` → look up ``X`` in ``previous_steps`` (last
+      successful run of the same workflow)
+    - ``trigger.X`` → look up ``X`` on the run's ``trigger_context``
+      (webhook/file trigger metadata)
+    - anything else → look up a prior step's output in the current run
+      via ``results``
 
     Raises:
         PlaceholderError: a token resolves to no source — prior step
-            missing, no previous successful run, or step missing from
-            the previous run.
+            missing, no previous successful run, step missing from the
+            previous run, no trigger_context, or missing trigger field.
     """
 
     def replace(match: re.Match[str]) -> str:
@@ -81,6 +146,8 @@ def _substitute(
                     f"unknown placeholder {{{name}}} — previous run has no step named {step_name!r}"
                 )
             return previous_steps[step_name]
+        if name.startswith(_TRIGGER_PREFIX):
+            return _resolve_trigger_token(name[len(_TRIGGER_PREFIX) :], trigger_context)
         if name not in results:
             raise PlaceholderError(f"unknown placeholder {{{name}}} — no prior step named {name!r}")
         return results[name].output
@@ -92,6 +159,7 @@ def _resolve_step(
     step: Step,
     results: dict[str, StepResult],
     previous_steps: dict[str, str] | None,
+    trigger_context: dict | None,
 ) -> Step:
     """Return a copy of ``step`` with its string fields substituted."""
     fields = _SUBSTITUTABLE_FIELDS.get(step.type, ())
@@ -99,7 +167,7 @@ def _resolve_step(
     for field in fields:
         value = getattr(step, field, None)
         if isinstance(value, str):
-            updates[field] = _substitute(value, results, previous_steps)
+            updates[field] = _substitute(value, results, previous_steps, trigger_context)
     return step.model_copy(update=updates) if updates else step
 
 
@@ -185,7 +253,7 @@ async def run_workflow(
 
     for step in workflow.steps:
         try:
-            resolved = _resolve_step(step, results, previous_steps)
+            resolved = _resolve_step(step, results, previous_steps, trigger_context)
         except PlaceholderError as e:
             result = StepResult(step_name=step.name, success=False, error=str(e))
         else:
