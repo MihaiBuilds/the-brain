@@ -95,7 +95,8 @@ def _clean_tables(_test_database):
     """
     with psycopg.connect(TEST_DSN, autocommit=True) as conn:
         conn.execute(
-            "TRUNCATE workflow_runs, workflow_schedules, daemon_heartbeats RESTART IDENTITY CASCADE"
+            "TRUNCATE workflow_runs, workflow_schedules, daemon_heartbeats, "
+            "webhook_secrets, file_watchers RESTART IDENTITY CASCADE"
         )
     yield
 
