@@ -255,12 +255,19 @@ async def _fire_one(workflow_name: str, event_path: str, mapped_event: str) -> N
 async def _resolve_workflow_file_path(workflow_name: str) -> str | None:
     """Look up the registered workflow file path for the watcher.
 
-    For v1.0 we follow the same pattern as the webhook endpoint: the
-    most recent workflow_runs row for this workflow carries the path,
-    set by `brain run` or by an earlier watcher fire. A follow-up adds
-    the explicit register-watcher CLI that records the path on
-    registration; until then this lookup is the bridge.
+    Reads from ``file_watchers.workflow_file_path`` — recorded by
+    ``brain register-watcher`` at registration time. Falls back to the
+    most recent workflow_runs row for backwards compatibility with
+    rows registered before the column existed.
     """
+    rows = await fetch_all(
+        "SELECT workflow_file_path FROM file_watchers WHERE workflow_name = %s",
+        (workflow_name,),
+    )
+    if rows and rows[0]["workflow_file_path"]:
+        return rows[0]["workflow_file_path"]
+
+    # Pre-migration fallback: read from the run history.
     rows = await fetch_all(
         """
         SELECT workflow_file_path

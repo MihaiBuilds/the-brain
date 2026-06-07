@@ -268,12 +268,16 @@ def test_file_watchers_table_exists_with_expected_columns():
         "watched_events": "jsonb",
         "enabled": "boolean",
         "created_at": "timestamp with time zone",
+        "workflow_file_path": "text",
     }
     assert set(cols) == set(expected)
     for name, data_type in expected.items():
         assert cols[name]["data_type"] == data_type
     for col in ("workflow_name", "watched_path", "watched_events", "enabled"):
         assert cols[col]["is_nullable"] == "NO"
+    # workflow_file_path is nullable on the column itself so pre-migration
+    # rows survive; CLI-side enforcement keeps new rows always populated.
+    assert cols["workflow_file_path"]["is_nullable"] == "YES"
 
 
 def test_file_watchers_workflow_name_is_unique():
