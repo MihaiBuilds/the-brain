@@ -221,6 +221,9 @@ __marimo__/
 # Private content — not open-source
 content/
 
+# Example watched directory for brain-watcher — populated by the user
+watched/
+
 
 # macOS metadata
 .DS_Store
