@@ -36,11 +36,13 @@ def _write_workflow(tmp_path, name, workflow_name=None):
     return str(path)
 
 
-def _seed_webhook(name, hmac_secret="seeded-secret", enabled=True):
+def _seed_webhook(name, hmac_secret="seeded-secret", enabled=True, file_path=None):
     with psycopg.connect(_DSN, autocommit=True) as conn:
         conn.execute(
-            "INSERT INTO webhook_secrets (workflow_name, hmac_secret, enabled) VALUES (%s, %s, %s)",
-            (name, hmac_secret, enabled),
+            "INSERT INTO webhook_secrets "
+            "(workflow_name, hmac_secret, enabled, workflow_file_path) "
+            "VALUES (%s, %s, %s, %s)",
+            (name, hmac_secret, enabled, file_path or f"/tmp/{name}.py"),
         )
 
 
@@ -67,8 +69,8 @@ def _seed_watcher(name, watched_path="/tmp/watched", enabled=True):
 def _fetch_webhook(name):
     with psycopg.connect(_DSN, autocommit=True) as conn, conn.cursor() as cur:
         cur.execute(
-            "SELECT workflow_name, hmac_secret, enabled FROM webhook_secrets "
-            "WHERE workflow_name = %s",
+            "SELECT workflow_name, hmac_secret, enabled, workflow_file_path "
+            "FROM webhook_secrets WHERE workflow_name = %s",
             (name,),
         )
         row = cur.fetchone()
@@ -126,6 +128,17 @@ def test_register_webhook_rejects_duplicate_name_before_insert(tmp_path):
     # Original row unchanged.
     row = _fetch_webhook("dup")
     assert row[1] == "seeded-secret"
+
+
+def test_register_webhook_records_absolute_workflow_file_path(tmp_path):
+    """The workflow file path is stored as absolute so the daemon's CWD does not matter."""
+    workflow_path = _write_workflow(tmp_path, "abs.py")
+    result = CliRunner().invoke(cli, ["register-webhook", workflow_path])
+    assert result.exit_code == 0, result.output
+    row = _fetch_webhook("abs")
+    assert row is not None
+    # Column index 3 is workflow_file_path per the _fetch_webhook SELECT order.
+    assert row[3] == str(tmp_path.resolve() / "abs.py")
 
 
 def test_register_webhook_supports_name_override(tmp_path):

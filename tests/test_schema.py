@@ -219,12 +219,17 @@ def test_webhook_secrets_table_exists_with_expected_columns():
         "hmac_secret": "text",
         "enabled": "boolean",
         "created_at": "timestamp with time zone",
+        "workflow_file_path": "text",
     }
     assert set(cols) == set(expected)
     for name, data_type in expected.items():
         assert cols[name]["data_type"] == data_type
     for col in ("workflow_name", "hmac_secret", "enabled"):
         assert cols[col]["is_nullable"] == "NO"
+    # workflow_file_path is nullable on the column itself so existing rows
+    # (pre-migration 004) keep their value; CLI-side enforcement (register-webhook
+    # always populates it) is what makes new rows always carry a path.
+    assert cols["workflow_file_path"]["is_nullable"] == "YES"
 
 
 def test_webhook_secrets_workflow_name_is_unique():
