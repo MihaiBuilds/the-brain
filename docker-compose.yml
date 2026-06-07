@@ -83,5 +83,51 @@ services:
       # the shell environment before bringing the `api` profile up.
       THE_BRAIN_API_TOKEN: ${THE_BRAIN_API_TOKEN:-}
 
+  # File watcher daemon — opt-in via the `watcher` profile:
+  #   docker compose --profile watcher up -d
+  # Separate process from the scheduler daemon and the HTTP API by
+  # design; the watcher's crash does not kill the scheduler. The
+  # watched directory is mounted as an explicit volume — adjust the
+  # host-side path to whatever directory your watcher rows reference.
+  # The brain-watcher container does NOT run migrations; it depends on
+  # the `brain` service having migrated the database first.
+  brain-watcher:
+    profiles: ["watcher"]
+    build: .
+    depends_on:
+      db:
+        condition: service_healthy
+      brain:
+        condition: service_healthy
+    restart: unless-stopped
+    entrypoint: ["brain", "watcher"]
+    volumes:
+      # Map a host directory into the container so `brain register-watcher
+      # --path /data/watched` actually has something to observe. Change
+      # the host side (./watched) to point at the directory your
+      # workflows monitor.
+      - ./watched:/data/watched
+    environment:
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_NAME: the_brain
+      DB_USER: the_brain
+      DB_PASSWORD: the_brain
+      MEMORY_VAULT_URL: ${MEMORY_VAULT_URL:-http://host.docker.internal:8000}
+      MEMORY_VAULT_TOKEN: ${MEMORY_VAULT_TOKEN:-}
+      LLM_BASE_URL: ${LLM_BASE_URL:-http://host.docker.internal:1234/v1}
+      LLM_API_KEY: ${LLM_API_KEY:-lm-studio}
+      LLM_MODEL: ${LLM_MODEL:-}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    # Healthcheck — `brain watcher-status` reads the watcher heartbeat
+    # under daemon_id `hostname:watcher` and exits 0 only if the
+    # watcher has ticked within the last 30 seconds.
+    healthcheck:
+      test: ["CMD", "brain", "watcher-status"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
 volumes:
   pgdata:

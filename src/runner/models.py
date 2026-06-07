@@ -39,3 +39,4 @@ class WorkflowRun(BaseModel):
     error: str | None = None
     previous_run_id: UUID | None = None
     planned_steps: list[dict] | None = None
+    trigger_context: dict | None = None

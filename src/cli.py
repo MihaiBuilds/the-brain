@@ -14,6 +14,17 @@ The Brain — command-line interface.
     brain daemon      Run the scheduler daemon (long-running)
     brain daemon-status  Check whether the daemon is healthy (exit 0 if yes)
     brain serve       Run the HTTP API (long-running, requires THE_BRAIN_API_TOKEN)
+    brain register-webhook    Register a workflow as a webhook trigger
+    brain disable-webhook     Soft-disable a webhook (it will return 404)
+    brain enable-webhook      Re-enable a webhook
+    brain unregister-webhook  Hard-delete a webhook registration
+    brain list-triggers       Unified view of cron schedules + webhooks + watchers
+    brain watcher             Run the file watcher daemon (long-running)
+    brain watcher-status      Check whether the watcher daemon is healthy (exit 0 if yes)
+    brain register-watcher    Register a workflow as a file watcher trigger
+    brain disable-watcher     Soft-disable a watcher (the daemon will skip it)
+    brain enable-watcher      Re-enable a watcher
+    brain unregister-watcher  Hard-delete a watcher registration
 """
 
 import asyncio
@@ -529,6 +540,435 @@ def serve(port: int, host: str) -> None:
         raise SystemExit(1) from e
 
     uvicorn.run(app, host=host, port=port, log_level="info")
+
+
+# ---------------------------------------------------------------------------
+# Webhook trigger lifecycle (M3)
+# ---------------------------------------------------------------------------
+
+
+@cli.command(name="register-webhook")
+@click.argument("workflow_path", type=click.Path())
+@click.option(
+    "--name",
+    "name_override",
+    help="Register under this name instead of the workflow's own name.",
+)
+def register_webhook(workflow_path: str, name_override: str | None) -> None:
+    """Register a workflow as a webhook trigger.
+
+    WORKFLOW_PATH is a .py file defining a module-level 'workflow'. The
+    workflow file is loaded before the row is inserted, and a fresh
+    HMAC-SHA256 secret is generated and printed to stdout. Save it now:
+    it cannot be retrieved later.
+    """
+    asyncio.run(_register_webhook(workflow_path, name_override))
+
+
+async def _register_webhook(workflow_path: str, name_override: str | None) -> None:
+    from src.db import close_pool, execute_query, fetch_one, init_pool
+    from src.triggers.hmac import generate_secret
+    from src.workflow.loader import WorkflowLoadError, import_workflow_from_file
+
+    try:
+        workflow = import_workflow_from_file(workflow_path)
+    except WorkflowLoadError as e:
+        click.echo(f"Error: {e}", err=True)
+        raise SystemExit(1) from e
+
+    name = name_override or workflow.name
+    secret = generate_secret()
+
+    await init_pool()
+    try:
+        existing = await fetch_one(
+            "SELECT 1 FROM webhook_secrets WHERE workflow_name = %s",
+            (name,),
+        )
+        if existing is not None:
+            click.echo(
+                f"Error: a webhook named {name!r} already exists — "
+                f"use `brain unregister-webhook {name}` first, "
+                "or pass --name to register under a different name",
+                err=True,
+            )
+            raise SystemExit(1)
+
+        await execute_query(
+            "INSERT INTO webhook_secrets "
+            "(workflow_name, hmac_secret, workflow_file_path) VALUES (%s, %s, %s)",
+            (name, secret, str(Path(workflow_path).resolve())),
+        )
+    finally:
+        await close_pool()
+
+    click.echo(f"Registered webhook {name!r}.")
+    click.echo("")
+    click.echo("Save this secret now — it cannot be retrieved later:")
+    click.echo("")
+    click.echo(f"  {secret}")
+    click.echo("")
+    click.echo(
+        "Sign the request body with HMAC-SHA256 and send the digest in "
+        "the X-Brain-Signature header as `sha256=<hex>`."
+    )
+
+
+@cli.command(name="disable-webhook")
+@click.argument("name")
+def disable_webhook(name: str) -> None:
+    """Soft-disable a webhook. The endpoint will respond 404 until re-enabled."""
+    asyncio.run(_set_webhook_enabled(name, False))
+
+
+@cli.command(name="enable-webhook")
+@click.argument("name")
+def enable_webhook(name: str) -> None:
+    """Re-enable a previously disabled webhook."""
+    asyncio.run(_set_webhook_enabled(name, True))
+
+
+async def _set_webhook_enabled(name: str, enabled: bool) -> None:
+    from src.db import close_pool, execute_query, init_pool
+
+    await init_pool()
+    try:
+        rowcount = await execute_query(
+            "UPDATE webhook_secrets SET enabled = %s WHERE workflow_name = %s",
+            (enabled, name),
+        )
+    finally:
+        await close_pool()
+
+    if rowcount == 0:
+        click.echo(f"Error: no webhook named {name!r}", err=True)
+        raise SystemExit(1)
+
+    verb = "enabled" if enabled else "disabled"
+    click.echo(f"Webhook {name!r} {verb}.")
+
+
+@cli.command(name="unregister-webhook")
+@click.argument("name")
+def unregister_webhook(name: str) -> None:
+    """Hard-delete a webhook registration. Past run rows are not affected."""
+    asyncio.run(_unregister_webhook(name))
+
+
+async def _unregister_webhook(name: str) -> None:
+    from src.db import close_pool, execute_query, init_pool
+
+    await init_pool()
+    try:
+        rowcount = await execute_query(
+            "DELETE FROM webhook_secrets WHERE workflow_name = %s",
+            (name,),
+        )
+    finally:
+        await close_pool()
+
+    if rowcount == 0:
+        click.echo(f"Error: no webhook named {name!r}", err=True)
+        raise SystemExit(1)
+
+    click.echo(f"Unregistered webhook {name!r}.")
+
+
+# ---------------------------------------------------------------------------
+# Unified trigger listing (M3)
+# ---------------------------------------------------------------------------
+
+
+@cli.command(name="list-triggers")
+def list_triggers() -> None:
+    """Unified view of all registered triggers — cron, webhook, file.
+
+    Shows one row per registered trigger across the three trigger types,
+    with the trigger type, workflow name, and enabled state. File-watcher
+    rows appear here as soon as `brain register-watcher` lands; until
+    then the watcher rows section is empty.
+    """
+    asyncio.run(_list_triggers())
+
+
+async def _list_triggers() -> None:
+    from src.db import close_pool, fetch_all, init_pool
+
+    await init_pool()
+    try:
+        schedules = await fetch_all(
+            "SELECT workflow_name, cron_expression, enabled "
+            "FROM workflow_schedules ORDER BY workflow_name"
+        )
+        webhooks = await fetch_all(
+            "SELECT workflow_name, enabled FROM webhook_secrets ORDER BY workflow_name"
+        )
+        watchers = await fetch_all(
+            "SELECT workflow_name, watched_path, enabled FROM file_watchers ORDER BY workflow_name"
+        )
+    finally:
+        await close_pool()
+
+    if not schedules and not webhooks and not watchers:
+        click.echo("No triggers registered.")
+        return
+
+    click.echo(f"{'TYPE':<10}{'NAME':<24}{'ENABLED':<10}DETAIL")
+    for row in schedules:
+        enabled = "yes" if row["enabled"] else "no"
+        click.echo(
+            f"{'cron':<10}{row['workflow_name'][:23]:<24}{enabled:<10}{row['cron_expression']}"
+        )
+    for row in webhooks:
+        enabled = "yes" if row["enabled"] else "no"
+        click.echo(f"{'webhook':<10}{row['workflow_name'][:23]:<24}{enabled:<10}—")
+    for row in watchers:
+        enabled = "yes" if row["enabled"] else "no"
+        click.echo(f"{'file':<10}{row['workflow_name'][:23]:<24}{enabled:<10}{row['watched_path']}")
+
+
+@cli.command()
+def watcher() -> None:
+    """Run the file watcher daemon.
+
+    Long-running process. Watches every enabled file_watchers row's
+    directory via the watchdog library, debounces events on a 500ms
+    window per (workflow, path), and fires the registered workflow
+    with the file path in trigger_context. On boot, any file-triggered
+    workflow_runs row still in 'running' status is recovered as a
+    failed run from a previous crash. SIGTERM or SIGINT triggers a
+    graceful shutdown after the current workflow finishes.
+    """
+    asyncio.run(_watcher())
+
+
+async def _watcher() -> None:
+    from src.db import close_pool, init_pool
+    from src.triggers.watcher import run_watcher_daemon
+
+    await init_pool()
+    try:
+        await run_watcher_daemon()
+    finally:
+        await close_pool()
+
+
+@cli.command(name="watcher-status")
+def watcher_status() -> None:
+    """Check whether the file watcher daemon is healthy.
+
+    Reads the watcher's heartbeat from daemon_heartbeats and exits 0 if
+    it was written within the last 30 seconds. Designed for use as a
+    Docker healthcheck on the brain-watcher service.
+    """
+    asyncio.run(_watcher_status())
+
+
+async def _watcher_status() -> None:
+    from src.db import close_pool, fetch_one, init_pool
+    from src.triggers.watcher import watcher_daemon_id
+
+    expected_id = watcher_daemon_id()
+
+    await init_pool()
+    try:
+        heartbeat = await fetch_one(
+            "SELECT daemon_id, last_tick_at FROM daemon_heartbeats WHERE daemon_id = %s",
+            (expected_id,),
+        )
+    finally:
+        await close_pool()
+
+    if heartbeat is None:
+        click.echo(f"unhealthy: no heartbeat row for {expected_id} — watcher has never started")
+        raise SystemExit(1)
+
+    age_seconds = (datetime.now(UTC) - heartbeat["last_tick_at"]).total_seconds()
+    if age_seconds > HEARTBEAT_STALE_SECONDS:
+        click.echo(
+            f"unhealthy: last tick {age_seconds:.0f}s ago "
+            f"(threshold {HEARTBEAT_STALE_SECONDS}s, watcher {expected_id})"
+        )
+        raise SystemExit(1)
+
+    click.echo(f"healthy: last tick {age_seconds:.0f}s ago (watcher {expected_id})")
+
+
+# ---------------------------------------------------------------------------
+# File watcher trigger lifecycle (M3)
+# ---------------------------------------------------------------------------
+
+_VALID_WATCH_EVENTS = ("created", "modified", "deleted")
+
+
+def _parse_events(events_csv: str) -> list[str]:
+    """Parse the --events comma-separated value into a validated list.
+
+    Raises click.BadParameter on empty list or unknown event name. The
+    daemon's per-row event filter assumes the watched_events JSONB only
+    contains values from _VALID_WATCH_EVENTS.
+    """
+    events = [e.strip() for e in events_csv.split(",") if e.strip()]
+    if not events:
+        raise click.BadParameter("--events must be a non-empty list")
+    for event in events:
+        if event not in _VALID_WATCH_EVENTS:
+            raise click.BadParameter(
+                f"unknown event {event!r} — must be one of {', '.join(_VALID_WATCH_EVENTS)}"
+            )
+    return events
+
+
+@cli.command(name="register-watcher")
+@click.argument("workflow_path", type=click.Path())
+@click.option(
+    "--path",
+    "watched_path",
+    required=True,
+    help="Directory to watch (single dir, no recursion).",
+)
+@click.option(
+    "--events",
+    "events_csv",
+    default="modified",
+    show_default=True,
+    help="Event types to fire on, comma-separated: created,modified,deleted.",
+)
+@click.option(
+    "--name",
+    "name_override",
+    help="Register under this name instead of the workflow's own name.",
+)
+def register_watcher(
+    workflow_path: str,
+    watched_path: str,
+    events_csv: str,
+    name_override: str | None,
+) -> None:
+    """Register a workflow as a file watcher trigger.
+
+    WORKFLOW_PATH is a .py file defining a module-level 'workflow'. The
+    workflow file is loaded, the watched directory must exist at
+    registration time, and the events list is validated before the row
+    is inserted. Duplicate names are rejected.
+    """
+    events = _parse_events(events_csv)
+    asyncio.run(_register_watcher(workflow_path, watched_path, events, name_override))
+
+
+async def _register_watcher(
+    workflow_path: str,
+    watched_path: str,
+    events: list[str],
+    name_override: str | None,
+) -> None:
+    import json as _json
+
+    from src.db import close_pool, execute_query, fetch_one, init_pool
+    from src.workflow.loader import WorkflowLoadError, import_workflow_from_file
+
+    try:
+        workflow = import_workflow_from_file(workflow_path)
+    except WorkflowLoadError as e:
+        click.echo(f"Error: {e}", err=True)
+        raise SystemExit(1) from e
+
+    absolute_dir = Path(watched_path).resolve()
+    if not absolute_dir.exists():
+        click.echo(f"Error: watched path {watched_path!r} does not exist", err=True)
+        raise SystemExit(1)
+    if not absolute_dir.is_dir():
+        click.echo(f"Error: watched path {watched_path!r} is not a directory", err=True)
+        raise SystemExit(1)
+
+    name = name_override or workflow.name
+    absolute_workflow = str(Path(workflow_path).resolve())
+
+    await init_pool()
+    try:
+        existing = await fetch_one(
+            "SELECT 1 FROM file_watchers WHERE workflow_name = %s",
+            (name,),
+        )
+        if existing is not None:
+            click.echo(
+                f"Error: a watcher named {name!r} already exists — "
+                f"use `brain unregister-watcher {name}` first, "
+                "or pass --name to register under a different name",
+                err=True,
+            )
+            raise SystemExit(1)
+
+        await execute_query(
+            "INSERT INTO file_watchers "
+            "(workflow_name, watched_path, watched_events, enabled, workflow_file_path) "
+            "VALUES (%s, %s, %s::jsonb, true, %s)",
+            (name, str(absolute_dir), _json.dumps(events), absolute_workflow),
+        )
+    finally:
+        await close_pool()
+
+    click.echo(f"Registered watcher {name!r} — watching {absolute_dir} for {','.join(events)}.")
+
+
+@cli.command(name="disable-watcher")
+@click.argument("name")
+def disable_watcher(name: str) -> None:
+    """Soft-disable a watcher. The daemon will skip it on the next tick."""
+    asyncio.run(_set_watcher_enabled(name, False))
+
+
+@cli.command(name="enable-watcher")
+@click.argument("name")
+def enable_watcher(name: str) -> None:
+    """Re-enable a previously disabled watcher."""
+    asyncio.run(_set_watcher_enabled(name, True))
+
+
+async def _set_watcher_enabled(name: str, enabled: bool) -> None:
+    from src.db import close_pool, execute_query, init_pool
+
+    await init_pool()
+    try:
+        rowcount = await execute_query(
+            "UPDATE file_watchers SET enabled = %s WHERE workflow_name = %s",
+            (enabled, name),
+        )
+    finally:
+        await close_pool()
+
+    if rowcount == 0:
+        click.echo(f"Error: no watcher named {name!r}", err=True)
+        raise SystemExit(1)
+
+    verb = "enabled" if enabled else "disabled"
+    click.echo(f"Watcher {name!r} {verb}.")
+
+
+@cli.command(name="unregister-watcher")
+@click.argument("name")
+def unregister_watcher(name: str) -> None:
+    """Hard-delete a watcher registration. Past run rows are not affected."""
+    asyncio.run(_unregister_watcher(name))
+
+
+async def _unregister_watcher(name: str) -> None:
+    from src.db import close_pool, execute_query, init_pool
+
+    await init_pool()
+    try:
+        rowcount = await execute_query(
+            "DELETE FROM file_watchers WHERE workflow_name = %s",
+            (name,),
+        )
+    finally:
+        await close_pool()
+
+    if rowcount == 0:
+        click.echo(f"Error: no watcher named {name!r}", err=True)
+        raise SystemExit(1)
+
+    click.echo(f"Unregistered watcher {name!r}.")
 
 
 def main() -> None:
