@@ -135,6 +135,7 @@ async def run_workflow(
     workflow: Workflow,
     file_path: str,
     on_step_complete: Callable[[StepResult], None] | None = None,
+    trigger_context: dict | None = None,
 ) -> WorkflowRun:
     """Run a workflow end to end and persist the result.
 
@@ -163,8 +164,8 @@ async def run_workflow(
         """
         INSERT INTO workflow_runs
             (id, workflow_name, workflow_file_path, started_at, status,
-             previous_run_id, planned_steps)
-        VALUES (%s, %s, %s, %s, 'running', %s, %s)
+             previous_run_id, planned_steps, trigger_context)
+        VALUES (%s, %s, %s, %s, 'running', %s, %s, %s)
         """,
         (
             run_id,
@@ -173,6 +174,7 @@ async def run_workflow(
             started_at,
             previous_run_id,
             json.dumps(planned_steps),
+            json.dumps(trigger_context) if trigger_context is not None else None,
         ),
     )
     logger.info("Run %s started — workflow %r", run_id, workflow.name)
@@ -234,4 +236,5 @@ async def run_workflow(
         error=error,
         previous_run_id=previous_run_id,
         planned_steps=planned_steps,
+        trigger_context=trigger_context,
     )

@@ -589,8 +589,9 @@ async def _register_webhook(workflow_path: str, name_override: str | None) -> No
             raise SystemExit(1)
 
         await execute_query(
-            "INSERT INTO webhook_secrets (workflow_name, hmac_secret) VALUES (%s, %s)",
-            (name, secret),
+            "INSERT INTO webhook_secrets "
+            "(workflow_name, hmac_secret, workflow_file_path) VALUES (%s, %s, %s)",
+            (name, secret, str(Path(workflow_path).resolve())),
         )
     finally:
         await close_pool()
