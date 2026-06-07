@@ -19,6 +19,8 @@ The Brain — command-line interface.
     brain enable-webhook      Re-enable a webhook
     brain unregister-webhook  Hard-delete a webhook registration
     brain list-triggers       Unified view of cron schedules + webhooks + watchers
+    brain watcher             Run the file watcher daemon (long-running)
+    brain watcher-status      Check whether the watcher daemon is healthy (exit 0 if yes)
 """
 
 import asyncio
@@ -719,6 +721,73 @@ async def _list_triggers() -> None:
     for row in watchers:
         enabled = "yes" if row["enabled"] else "no"
         click.echo(f"{'file':<10}{row['workflow_name'][:23]:<24}{enabled:<10}{row['watched_path']}")
+
+
+@cli.command()
+def watcher() -> None:
+    """Run the file watcher daemon.
+
+    Long-running process. Watches every enabled file_watchers row's
+    directory via the watchdog library, debounces events on a 500ms
+    window per (workflow, path), and fires the registered workflow
+    with the file path in trigger_context. On boot, any file-triggered
+    workflow_runs row still in 'running' status is recovered as a
+    failed run from a previous crash. SIGTERM or SIGINT triggers a
+    graceful shutdown after the current workflow finishes.
+    """
+    asyncio.run(_watcher())
+
+
+async def _watcher() -> None:
+    from src.db import close_pool, init_pool
+    from src.triggers.watcher import run_watcher_daemon
+
+    await init_pool()
+    try:
+        await run_watcher_daemon()
+    finally:
+        await close_pool()
+
+
+@cli.command(name="watcher-status")
+def watcher_status() -> None:
+    """Check whether the file watcher daemon is healthy.
+
+    Reads the watcher's heartbeat from daemon_heartbeats and exits 0 if
+    it was written within the last 30 seconds. Designed for use as a
+    Docker healthcheck on the brain-watcher service.
+    """
+    asyncio.run(_watcher_status())
+
+
+async def _watcher_status() -> None:
+    from src.db import close_pool, fetch_one, init_pool
+    from src.triggers.watcher import watcher_daemon_id
+
+    expected_id = watcher_daemon_id()
+
+    await init_pool()
+    try:
+        heartbeat = await fetch_one(
+            "SELECT daemon_id, last_tick_at FROM daemon_heartbeats WHERE daemon_id = %s",
+            (expected_id,),
+        )
+    finally:
+        await close_pool()
+
+    if heartbeat is None:
+        click.echo(f"unhealthy: no heartbeat row for {expected_id} — watcher has never started")
+        raise SystemExit(1)
+
+    age_seconds = (datetime.now(UTC) - heartbeat["last_tick_at"]).total_seconds()
+    if age_seconds > HEARTBEAT_STALE_SECONDS:
+        click.echo(
+            f"unhealthy: last tick {age_seconds:.0f}s ago "
+            f"(threshold {HEARTBEAT_STALE_SECONDS}s, watcher {expected_id})"
+        )
+        raise SystemExit(1)
+
+    click.echo(f"healthy: last tick {age_seconds:.0f}s ago (watcher {expected_id})")
 
 
 def main() -> None:
