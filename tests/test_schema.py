@@ -197,3 +197,114 @@ def test_daemon_heartbeats_daemon_id_is_primary_key():
         )
         pk_columns = [row[0] for row in cur.fetchall()]
     assert pk_columns == ["daemon_id"]
+
+
+# ---------------------------------------------------------------------------
+# M3 schema (migration 003) — trigger tables and trigger_context column
+# ---------------------------------------------------------------------------
+
+
+def test_workflow_runs_has_trigger_context_jsonb_column():
+    cols = _columns("workflow_runs")
+    assert "trigger_context" in cols
+    assert cols["trigger_context"]["data_type"] == "jsonb"
+    assert cols["trigger_context"]["is_nullable"] == "YES"
+
+
+def test_webhook_secrets_table_exists_with_expected_columns():
+    cols = _columns("webhook_secrets")
+    expected = {
+        "id": "uuid",
+        "workflow_name": "text",
+        "hmac_secret": "text",
+        "enabled": "boolean",
+        "created_at": "timestamp with time zone",
+    }
+    assert set(cols) == set(expected)
+    for name, data_type in expected.items():
+        assert cols[name]["data_type"] == data_type
+    for col in ("workflow_name", "hmac_secret", "enabled"):
+        assert cols[col]["is_nullable"] == "NO"
+
+
+def test_webhook_secrets_workflow_name_is_unique():
+    with psycopg.connect(DSN, autocommit=True) as conn:
+        conn.execute(
+            "INSERT INTO webhook_secrets (workflow_name, hmac_secret) VALUES ('dup', 'secret-a')"
+        )
+        with conn.cursor() as cur:
+            try:
+                cur.execute(
+                    "INSERT INTO webhook_secrets (workflow_name, hmac_secret) "
+                    "VALUES ('dup', 'secret-b')"
+                )
+                conn.commit()
+                pytest.fail("expected UniqueViolation")
+            except psycopg.errors.UniqueViolation:
+                pass
+
+
+def test_webhook_secrets_enabled_defaults_to_true():
+    with psycopg.connect(DSN, autocommit=True) as conn, conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO webhook_secrets (workflow_name, hmac_secret) "
+            "VALUES ('with_default', 'secret') RETURNING enabled"
+        )
+        (enabled,) = cur.fetchone()
+    assert enabled is True
+
+
+def test_file_watchers_table_exists_with_expected_columns():
+    cols = _columns("file_watchers")
+    expected = {
+        "id": "uuid",
+        "workflow_name": "text",
+        "watched_path": "text",
+        "watched_events": "jsonb",
+        "enabled": "boolean",
+        "created_at": "timestamp with time zone",
+    }
+    assert set(cols) == set(expected)
+    for name, data_type in expected.items():
+        assert cols[name]["data_type"] == data_type
+    for col in ("workflow_name", "watched_path", "watched_events", "enabled"):
+        assert cols[col]["is_nullable"] == "NO"
+
+
+def test_file_watchers_workflow_name_is_unique():
+    with psycopg.connect(DSN, autocommit=True) as conn:
+        conn.execute(
+            "INSERT INTO file_watchers (workflow_name, watched_path, watched_events) "
+            "VALUES ('dup', '/a', '[\"modified\"]'::jsonb)"
+        )
+        with conn.cursor() as cur:
+            try:
+                cur.execute(
+                    "INSERT INTO file_watchers (workflow_name, watched_path, watched_events) "
+                    "VALUES ('dup', '/b', '[\"created\"]'::jsonb)"
+                )
+                conn.commit()
+                pytest.fail("expected UniqueViolation")
+            except psycopg.errors.UniqueViolation:
+                pass
+
+
+def test_file_watchers_enabled_defaults_to_true():
+    with psycopg.connect(DSN, autocommit=True) as conn, conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO file_watchers (workflow_name, watched_path, watched_events) "
+            "VALUES ('with_default', '/watched', '[\"modified\"]'::jsonb) RETURNING enabled"
+        )
+        (enabled,) = cur.fetchone()
+    assert enabled is True
+
+
+def test_file_watchers_watched_events_round_trips_as_json_array():
+    with psycopg.connect(DSN, autocommit=True) as conn, conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO file_watchers (workflow_name, watched_path, watched_events) "
+            "VALUES ('roundtrip', '/p', '[\"created\", \"modified\", \"deleted\"]'::jsonb) "
+            "RETURNING watched_events"
+        )
+        (events,) = cur.fetchone()
+    assert events == ["created", "modified", "deleted"]
