@@ -13,7 +13,7 @@ The Brain ships in five milestones. v1.0 is the full set, M1–M5.
 | M1 — Bare Runner | Run Python-defined workflows, persist every run to Postgres, inspect run history from the CLI | ✅ Done |
 | M2 — Triggers + State | Cron schedules, a long-running scheduler, workflows that read the previous run's output | ✅ Done |
 | M3 — Webhooks + File Watchers | Trigger workflows from HTTP webhooks and filesystem changes | ✅ Done |
-| M4 — MCP Tools + Multi-LLM | Call any MCP server as a workflow step; pluggable LLM providers | 📋 Planned |
+| M4 — MCP Tools + Multi-LLM | Call any MCP server as a workflow step; per-step LLM overrides; derive-your-own-image pattern | ✅ Done |
 | M5 — Polish + Launch | CI/CD, security pass, full docs, v1.0 release | 📋 Planned |
 
 ## What it will do (v1.0)
@@ -133,7 +133,7 @@ Run c609f5e0 — success
 
 ### 5. A real-world workflow
 
-[`examples/daily_digest.py`](examples/daily_digest.py) uses all three step types — it pulls recent memories, summarizes them with a local LLM, and writes the result to a file:
+[`examples/daily_digest.py`](examples/daily_digest.py) uses three of the four step types — it pulls recent memories, summarizes them with a local LLM, and writes the result to a file:
 
 ```python
 from src.workflow import LLMStep, MemoryVaultStep, ShellStep, Workflow
@@ -160,11 +160,14 @@ workflow = Workflow(
 )
 ```
 
-The three step types:
+### Step types reference
 
-- **`MemoryVaultStep`** — queries Memory Vault over its REST API.
-- **`LLMStep`** — calls an OpenAI-compatible LLM endpoint. Tested against LM Studio only; other OpenAI-compatible providers may work via the same wire format but are not promised in v1.0.
-- **`ShellStep`** — runs a shell command.
+| Step type | What it does | Substitutable fields | Notes |
+|---|---|---|---|
+| **`MemoryVaultStep`** | Queries Memory Vault over its REST API. | `query` | Easy default for talking to MV — no derived image required. |
+| **`LLMStep`** | Calls an OpenAI-compatible LLM endpoint. | `prompt`, `system` | Per-step overrides: `provider_url`, `api_key`, `model`, `timeout_seconds`, `max_tokens`, `temperature`. Tested against LM Studio only; other OpenAI-compatible providers may work via the same wire format but are not promised in v1.0. |
+| **`ShellStep`** | Runs a shell command as a subprocess. | `command` | Captures stdout; non-zero exit fails the step. |
+| **`McpToolStep`** | Spawns an MCP server over stdio and invokes one tool. | `server_command`, string values inside `args` | Per-step spawn — one subprocess per step. `tool` name and `args` keys are NEVER substituted. See "Call an MCP tool from a workflow" below. |
 
 This one needs a reachable Memory Vault and a configured LLM (see step 3). With both set up, run it the same way:
 

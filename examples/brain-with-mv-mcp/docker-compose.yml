@@ -1,0 +1,73 @@
+# Compose file demonstrating the derive-pattern: The Brain + Memory Vault
+# both running in the same compose, isolated by separate Postgres instances.
+#
+# Brain workflows can spawn MV's MCP server as a subprocess inside the
+# brain-with-mv-mcp container; the MCP subprocess connects to mv-db via
+# env vars set in the workflow's `server_command`.
+#
+# Usage (from the repo root):
+#   docker compose -f examples/brain-with-mv-mcp/docker-compose.yml up -d --build
+#
+# This brings up brain-db (Brain's Postgres), mv-db (MV's Postgres, with
+# pgvector), and brain-with-mv (the derived Brain image with MV source at
+# /opt/memory-vault).
+
+services:
+  brain-db:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: the_brain
+      POSTGRES_USER: the_brain
+      POSTGRES_PASSWORD: the_brain
+    volumes:
+      - brain-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U the_brain -d the_brain"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  mv-db:
+    # MV needs pgvector — use a Postgres image with the extension preloaded.
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_DB: memory_vault
+      POSTGRES_USER: memory_vault
+      POSTGRES_PASSWORD: memory_vault
+    volumes:
+      - mv-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U memory_vault -d memory_vault"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  brain-with-mv:
+    build:
+      # Build context is the repo root so the Dockerfile can reference
+      # examples/brain-with-mv-mcp/Dockerfile relative to it.
+      context: ../..
+      dockerfile: examples/brain-with-mv-mcp/Dockerfile
+    depends_on:
+      brain-db:
+        condition: service_healthy
+      mv-db:
+        condition: service_healthy
+    environment:
+      # Brain's own Postgres
+      DB_HOST: brain-db
+      DB_PORT: 5432
+      DB_NAME: the_brain
+      DB_USER: the_brain
+      DB_PASSWORD: the_brain
+      # MV's Postgres — these are NOT set in the parent process. They live
+      # only inside the MCP subprocess env, set via `server_command` in the
+      # workflow file. See the workflow snippet in this folder's README.
+      LLM_BASE_URL: ${LLM_BASE_URL:-http://host.docker.internal:1234/v1}
+      LLM_API_KEY: ${LLM_API_KEY:-lm-studio}
+      LLM_MODEL: ${LLM_MODEL:-}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+
+volumes:
+  brain-pgdata:
+  mv-pgdata:
