@@ -155,3 +155,145 @@ async def test_llm_unexpected_response_shape_is_a_failure(monkeypatch):
     result = await LLMExecutor().execute(LLMStep(name="g", prompt="hi", model="test-model"))
     assert result.success is False
     assert "unexpected LLM response shape" in result.error
+
+
+# ---------------------------------------------------------------------------
+# LLMExecutor — per-step overrides
+# ---------------------------------------------------------------------------
+
+
+async def test_llm_provider_url_overrides_settings(monkeypatch):
+    seen_urls: list[str] = []
+
+    def handler(request):
+        seen_urls.append(str(request.url))
+        return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}}]})
+
+    _mock_httpx(monkeypatch, handler)
+    result = await LLMExecutor().execute(
+        LLMStep(
+            name="g",
+            prompt="hi",
+            model="test-model",
+            provider_url="http://custom-host:5678/v1",
+        )
+    )
+    assert result.success is True
+    assert seen_urls == ["http://custom-host:5678/v1/chat/completions"]
+
+
+async def test_llm_api_key_overrides_settings(monkeypatch):
+    seen_auth: list[str | None] = []
+
+    def handler(request):
+        seen_auth.append(request.headers.get("authorization"))
+        return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}}]})
+
+    _mock_httpx(monkeypatch, handler)
+    result = await LLMExecutor().execute(
+        LLMStep(name="g", prompt="hi", model="test-model", api_key="step-token")
+    )
+    assert result.success is True
+    assert seen_auth == ["Bearer step-token"]
+
+
+async def test_llm_no_auth_header_when_api_key_unset(monkeypatch):
+    # Per the locked S1 decision: api_key=None AND settings.llm_api_key=""
+    # means NO Authorization header is sent. Existing behavior was to send
+    # `Bearer ` with an empty value — this test pins the new behavior.
+    # Settings is a frozen dataclass, so swap the module-level binding.
+    import dataclasses
+
+    from src import config
+
+    patched = dataclasses.replace(config.settings, llm_api_key="")
+    monkeypatch.setattr("src.executors.llm.settings", patched)
+    seen_auth: list[str | None] = []
+
+    def handler(request):
+        seen_auth.append(request.headers.get("authorization"))
+        return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}}]})
+
+    _mock_httpx(monkeypatch, handler)
+    result = await LLMExecutor().execute(LLMStep(name="g", prompt="hi", model="test-model"))
+    assert result.success is True
+    assert seen_auth == [None]
+
+
+async def test_llm_max_tokens_flows_into_payload(monkeypatch):
+    seen_payloads: list[dict] = []
+
+    def handler(request):
+        import json
+
+        seen_payloads.append(json.loads(request.content))
+        return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}}]})
+
+    _mock_httpx(monkeypatch, handler)
+    await LLMExecutor().execute(
+        LLMStep(name="g", prompt="hi", model="test-model", max_tokens=42)
+    )
+    assert seen_payloads[0]["max_tokens"] == 42
+
+
+async def test_llm_max_tokens_absent_from_payload_when_unset(monkeypatch):
+    seen_payloads: list[dict] = []
+
+    def handler(request):
+        import json
+
+        seen_payloads.append(json.loads(request.content))
+        return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}}]})
+
+    _mock_httpx(monkeypatch, handler)
+    await LLMExecutor().execute(LLMStep(name="g", prompt="hi", model="test-model"))
+    assert "max_tokens" not in seen_payloads[0]
+
+
+async def test_llm_overrides_fall_back_to_settings_when_none(monkeypatch):
+    # When per-step overrides are None, the executor must use settings.X.
+    # This pins the fallback contract that callers rely on.
+    # Settings is a frozen dataclass, so swap the module-level binding.
+    import dataclasses
+
+    from src import config
+
+    patched = dataclasses.replace(
+        config.settings,
+        llm_base_url="http://from-settings:9999/v1",
+        llm_api_key="from-settings-key",
+    )
+    monkeypatch.setattr("src.executors.llm.settings", patched)
+
+    seen: dict[str, str | None] = {}
+
+    def handler(request):
+        seen["url"] = str(request.url)
+        seen["auth"] = request.headers.get("authorization")
+        return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}}]})
+
+    _mock_httpx(monkeypatch, handler)
+    await LLMExecutor().execute(LLMStep(name="g", prompt="hi", model="test-model"))
+    assert seen["url"] == "http://from-settings:9999/v1/chat/completions"
+    assert seen["auth"] == "Bearer from-settings-key"
+
+
+def test_llmstep_docstring_carries_lm_studio_caveat():
+    # Discipline-encoded-in-test: the "LM Studio only tested" caveat is a
+    # locked public design statement, not just a setup hint. If it
+    # disappears from the docstring, this test breaks loudly so the
+    # caveat is restored before the caveat-less code can ship.
+    assert "LM Studio" in (LLMStep.__doc__ or "")
+    assert "not promised in v1.0" in (LLMStep.__doc__ or "")
+
+
+def test_readme_carries_lm_studio_caveat():
+    # Same lock applied to the README's step-types list — the public
+    # docs must say "tested against LM Studio only", not just mention
+    # LM Studio as the setup target.
+    from pathlib import Path
+
+    readme = Path(__file__).resolve().parent.parent / "README.md"
+    text = readme.read_text(encoding="utf-8")
+    assert "Tested against LM Studio only" in text
+    assert "not promised in v1.0" in text
