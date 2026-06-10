@@ -470,6 +470,81 @@ healthy: last tick 7s ago (watcher ade05e01d190:watcher)
 
 `brain disable-watcher NAME` pauses the watcher (the daemon tears down its observer on the next sync); `brain enable-watcher NAME` brings it back. `brain unregister-watcher NAME` deletes the row; past run rows are preserved.
 
+## Call an MCP tool from a workflow
+
+`McpToolStep` lets a workflow spawn any MCP server as a subprocess, call one tool on it, and feed the result into a downstream step. The Brain implements only the stdio transport in v1.0 — the same transport Memory Vault's MCP server uses, the same one Claude Desktop uses, the same one every reference implementation uses.
+
+```python
+from src.workflow import LLMStep, McpToolStep, ShellStep, Workflow
+
+workflow = Workflow(
+    name="mcp-recall-memory",
+    steps=[
+        McpToolStep(
+            name="recall",
+            server_command="python -m memory_vault.mcp",
+            tool="recall",
+            args={"query": "what happened this week", "limit": 10},
+            timeout_seconds=30.0,
+        ),
+        LLMStep(
+            name="summarize",
+            prompt="Summarize:\n\n{recall}",
+        ),
+        ShellStep(name="save", command="cat > digest.md"),
+    ],
+)
+```
+
+`server_command` is the shell command that starts the MCP server over stdio. The Brain spawns it on each step run, completes the MCP `initialize` handshake, invokes one tool, then kills the subprocess. Per-step spawn — no shared server process, no cross-step state.
+
+`{previous.recall}` interpolates the recall step's output (the MCP tool's `result.content` array, JSON-serialized) into the LLM prompt the same way any other step's output flows downstream. Nested-field access like `{previous.recall.content[0].text}` is NOT supported in v1.0 — the output is a string after serialization, matching the `{trigger.body}` rule.
+
+### Substitution boundaries
+
+`McpToolStep` substitutes `{previous.X}` and `{trigger.X}` placeholders in:
+
+- `server_command` — same as `ShellStep.command`
+- String values inside `args` — `args={"query": "{previous.X}"}` becomes the resolved string
+
+It does NOT substitute:
+
+- The `tool` name — that's an MCP method name, not user data
+- `args` keys — only values are substituted, never keys
+- Non-string `args` values — ints, bools, nested dicts pass through unchanged
+
+### The derive-your-own-image pattern
+
+The stock `mihaibuilds/the-brain` image bundles ZERO MCP servers. The Brain is a workflow orchestrator; MCP servers are independent products. Coupling them would force users into installing things they don't need — anyone who only wants shell + LLM + webhook workflows should pay zero MCP cost.
+
+If your workflow's `server_command` calls an MCP server, install that server in a derived image:
+
+```dockerfile
+FROM mihaibuilds/the-brain:latest
+
+# Install whatever MCP server(s) your workflows call.
+# Each server's install instructions live in its own repo —
+# see Memory Vault, GitHub MCP, Sentry MCP, etc.
+RUN <install-command-per-the-server-s-readme>
+```
+
+This keeps each ecosystem product independent. The Brain stands alone. Memory Vault stands alone. You compose them by deriving your own image with the combination you want.
+
+Tested against Memory Vault's MCP server via this pattern. Other MCP servers should work with the same shape but are not promised in v1.0.
+
+### `MemoryVaultStep` vs `McpToolStep` — which to use for Memory Vault?
+
+Both can query Memory Vault. They optimize for different audiences:
+
+| | `MemoryVaultStep` | `McpToolStep` |
+|---|---|---|
+| Transport | REST API over HTTP | MCP stdio (JSON-RPC 2.0) |
+| Setup | Point at a running Memory Vault HTTP endpoint (`MEMORY_VAULT_URL`) | Install MV's MCP server in your derived image |
+| Best for | Workflows that only want hybrid search from MV | Workflows that want any of MV's MCP tools (recall, remember, forget, memory_status) — or that already use other MCP servers |
+| Available in stock image | Yes | No (requires derive-pattern) |
+
+`MemoryVaultStep` is the no-extra-setup default for the common case (search MV from a workflow). `McpToolStep` is the generic any-MCP-server mechanism. Both ship in v1.0; neither is deprecated. Pick whichever fits.
+
 ## Trigger types
 
 The Brain ships v1.0 with the four classical trigger types:
