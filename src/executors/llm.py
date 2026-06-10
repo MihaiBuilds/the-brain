@@ -1,4 +1,4 @@
-"""Executor for LLMStep — calls a local LLM through an OpenAI-compatible API."""
+"""Executor for LLMStep — calls an OpenAI-compatible LLM endpoint."""
 
 import httpx
 
@@ -10,7 +10,14 @@ _LLM_TIMEOUT = 120.0
 
 
 class LLMExecutor:
-    """Runs an LLMStep against an OpenAI-compatible endpoint (LM Studio)."""
+    """Runs an LLMStep against an OpenAI-compatible endpoint.
+
+    Per-step fields on LLMStep override config defaults from settings:
+    ``provider_url`` overrides LLM_BASE_URL, ``api_key`` overrides
+    LLM_API_KEY, ``timeout_seconds`` overrides the default 120s timeout,
+    ``max_tokens`` caps response length. Leave a field as None to fall
+    back to the configured default.
+    """
 
     async def execute(self, step: LLMStep) -> StepResult:  # type: ignore[override]
         model = step.model or settings.llm_model
@@ -25,16 +32,24 @@ class LLMExecutor:
             messages.append({"role": "system", "content": step.system})
         messages.append({"role": "user", "content": step.prompt})
 
-        payload = {
+        payload: dict = {
             "model": model,
             "messages": messages,
             "temperature": step.temperature,
         }
-        url = f"{settings.llm_base_url.rstrip('/')}/chat/completions"
-        headers = {"Authorization": f"Bearer {settings.llm_api_key}"}
+        if step.max_tokens is not None:
+            payload["max_tokens"] = step.max_tokens
+
+        base_url = step.provider_url or settings.llm_base_url
+        url = f"{base_url.rstrip('/')}/chat/completions"
+
+        api_key = step.api_key if step.api_key is not None else settings.llm_api_key
+        headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+
+        timeout = step.timeout_seconds if step.timeout_seconds is not None else _LLM_TIMEOUT
 
         try:
-            async with httpx.AsyncClient(timeout=_LLM_TIMEOUT) as client:
+            async with httpx.AsyncClient(timeout=timeout) as client:
                 response = await client.post(url, json=payload, headers=headers)
                 response.raise_for_status()
         except httpx.HTTPStatusError as e:

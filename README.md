@@ -163,7 +163,7 @@ workflow = Workflow(
 The three step types:
 
 - **`MemoryVaultStep`** — queries Memory Vault over its REST API.
-- **`LLMStep`** — calls a local LLM through an OpenAI-compatible endpoint.
+- **`LLMStep`** — calls an OpenAI-compatible LLM endpoint. Tested against LM Studio only; other OpenAI-compatible providers may work via the same wire format but are not promised in v1.0.
 - **`ShellStep`** — runs a shell command.
 
 This one needs a reachable Memory Vault and a configured LLM (see step 3). With both set up, run it the same way:
