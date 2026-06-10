@@ -39,10 +39,15 @@ from src.workflow.models import Step, Workflow
 logger = logging.getLogger(__name__)
 
 # Fields that may carry {placeholder} tokens, per step type.
+# McpToolStep also substitutes string values inside its ``args`` dict; that
+# branch is handled separately in ``_resolve_step`` because dict-traversal
+# is a different shape from the plain-string substitution every other
+# field uses.
 _SUBSTITUTABLE_FIELDS: dict[str, tuple[str, ...]] = {
     "memory_vault": ("query",),
     "llm": ("prompt", "system"),
     "shell": ("command",),
+    "mcp_tool": ("server_command",),
 }
 
 # A {name} token. Names follow the same shape as step names (no braces).
@@ -161,13 +166,40 @@ def _resolve_step(
     previous_steps: dict[str, str] | None,
     trigger_context: dict | None,
 ) -> Step:
-    """Return a copy of ``step`` with its string fields substituted."""
+    """Return a copy of ``step`` with its substitutable fields resolved.
+
+    Plain-string fields listed in ``_SUBSTITUTABLE_FIELDS`` are resolved
+    via ``_substitute``. ``McpToolStep.args`` is a dict; its STRING
+    values are resolved the same way, but keys and non-string values
+    pass through unchanged. The ``tool`` name is never substituted.
+    """
     fields = _SUBSTITUTABLE_FIELDS.get(step.type, ())
-    updates: dict[str, str] = {}
+    updates: dict[str, object] = {}
     for field in fields:
         value = getattr(step, field, None)
         if isinstance(value, str):
             updates[field] = _substitute(value, results, previous_steps, trigger_context)
+
+    # McpToolStep — substitute string values inside args. Keys and
+    # non-string values (ints, floats, bools, nested dicts) pass through
+    # unchanged. The `tool` field is NOT substituted.
+    if step.type == "mcp_tool":
+        original_args: dict = getattr(step, "args", {}) or {}
+        resolved_args: dict = {}
+        changed = False
+        for key, value in original_args.items():
+            if isinstance(value, str):
+                substituted = _substitute(
+                    value, results, previous_steps, trigger_context
+                )
+                resolved_args[key] = substituted
+                if substituted != value:
+                    changed = True
+            else:
+                resolved_args[key] = value
+        if changed:
+            updates["args"] = resolved_args
+
     return step.model_copy(update=updates) if updates else step
 
 

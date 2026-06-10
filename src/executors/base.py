@@ -1,17 +1,17 @@
 """
 Executor protocol, the per-step result, and dispatch by step type.
 
-Each step type (memory_vault / llm / shell) has one executor. Executors
-hold the behavior and I/O; the step models stay pure data. A caller
-looks up an executor with ``get_executor`` and calls ``execute`` without
-knowing the concrete step type.
+Each step type (memory_vault / llm / shell / mcp_tool) has one executor.
+Executors hold the behavior and I/O; the step models stay pure data. A
+caller looks up an executor with ``get_executor`` and calls ``execute``
+without knowing the concrete step type.
 """
 
 from typing import Protocol
 
 from pydantic import BaseModel
 
-from src.workflow.models import LLMStep, MemoryVaultStep, ShellStep, Step
+from src.workflow.models import LLMStep, McpToolStep, MemoryVaultStep, ShellStep, Step
 
 
 class StepResult(BaseModel):
@@ -41,6 +41,7 @@ def get_executor(step: Step) -> StepExecutor:
     # Imported here to avoid a circular import — the concrete executors
     # import StepResult from this module.
     from src.executors.llm import LLMExecutor
+    from src.executors.mcp_tool import McpToolExecutor
     from src.executors.memory_vault import MemoryVaultExecutor
     from src.executors.shell import ShellExecutor
 
@@ -50,6 +51,8 @@ def get_executor(step: Step) -> StepExecutor:
         return LLMExecutor()
     if isinstance(step, ShellStep):
         return ShellExecutor()
+    if isinstance(step, McpToolStep):
+        return McpToolExecutor()
 
     raise ValueError(f"no executor for step type: {type(step).__name__}")
 

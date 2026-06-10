@@ -21,7 +21,7 @@ not mid-run. A ``{step_name}`` placeholder in a field is stored verbatim
 here; the runner substitutes prior step output.
 """
 
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -44,13 +44,26 @@ class MemoryVaultStep(_StepBase):
 
 
 class LLMStep(_StepBase):
-    """Call a local LLM through an OpenAI-compatible endpoint (LM Studio)."""
+    """Call an OpenAI-compatible LLM endpoint.
+
+    Tested against LM Studio only. Other OpenAI-compatible providers
+    (Ollama, vLLM, llama.cpp server, OpenAI proper) may work via the
+    same wire format but are not promised in v1.0.
+
+    Optional per-step fields override config defaults from settings;
+    leave them as None to fall back to ``LLM_BASE_URL``, ``LLM_API_KEY``,
+    and the default 120s timeout.
+    """
 
     type: Literal["llm"] = "llm"
     prompt: str = Field(min_length=1)
     system: str | None = None
-    model: str | None = Field(default=None, description="Override the configured model.")
+    model: str | None = Field(default=None, description="Override LLM_MODEL.")
     temperature: float = Field(default=0.7, ge=0.0, le=2.0)
+    provider_url: str | None = Field(default=None, description="Override LLM_BASE_URL.")
+    api_key: str | None = Field(default=None, description="Override LLM_API_KEY.")
+    timeout_seconds: float | None = Field(default=None, gt=0.0, description="Override the default 120s timeout.")
+    max_tokens: int | None = Field(default=None, ge=1, description="Cap response length.")
 
 
 class ShellStep(_StepBase):
@@ -61,9 +74,33 @@ class ShellStep(_StepBase):
     timeout: int = Field(default=60, ge=1, le=3600, description="Seconds before kill.")
 
 
+class McpToolStep(_StepBase):
+    """Call a tool on an MCP server spawned as a subprocess.
+
+    ``server_command`` is a shell command that runs the MCP server over
+    stdio (newline-delimited JSON-RPC 2.0). The server is spawned for
+    this single step only — initialize handshake, one ``tools/call``
+    invocation, then the subprocess is killed.
+
+    ``args`` string values are substituted with ``{previous.X}`` and
+    ``{trigger.X}`` placeholders the same way ``ShellStep.command`` is;
+    non-string values pass through unchanged. The ``tool`` name and
+    ``args`` keys are NEVER substituted — only string values.
+
+    Tested against Memory Vault's MCP server via the derive-your-own-image
+    pattern. Other MCP servers should work but are not promised in v1.0.
+    """
+
+    type: Literal["mcp_tool"] = "mcp_tool"
+    server_command: str = Field(min_length=1)
+    tool: str = Field(min_length=1)
+    args: dict[str, Any] = Field(default_factory=dict)
+    timeout_seconds: float = Field(default=30.0, gt=0.0)
+
+
 # Discriminated union — Pydantic picks the subclass from the ``type`` field.
 Step = Annotated[
-    MemoryVaultStep | LLMStep | ShellStep,
+    MemoryVaultStep | LLMStep | ShellStep | McpToolStep,
     Field(discriminator="type"),
 ]
 
