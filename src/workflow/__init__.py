@@ -3,6 +3,7 @@
 from src.workflow.loader import WorkflowLoadError, import_workflow_from_file
 from src.workflow.models import (
     LLMStep,
+    McpToolStep,
     MemoryVaultStep,
     ShellStep,
     Step,
@@ -11,6 +12,7 @@ from src.workflow.models import (
 
 __all__ = [
     "LLMStep",
+    "McpToolStep",
     "MemoryVaultStep",
     "ShellStep",
     "Step",
