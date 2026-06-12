@@ -29,7 +29,9 @@ The Brain — command-line interface.
 
 import asyncio
 import logging
+import re
 from datetime import UTC, datetime
+from importlib.metadata import version as _pkg_version
 from pathlib import Path
 
 import click
@@ -43,6 +45,7 @@ logging.basicConfig(
 
 
 @click.group()
+@click.version_option(_pkg_version("the-brain"), prog_name="brain")
 def cli() -> None:
     """The Brain — workflow orchestrator for the MihaiBuilds ecosystem."""
 
@@ -57,9 +60,14 @@ async def _migrate() -> None:
     from src.db import close_pool, init_pool, run_migrations
 
     await init_pool()
-    await run_migrations()
+    applied = await run_migrations()
     await close_pool()
-    click.echo("Migrations complete.")
+    if applied == 0:
+        click.echo("Migrations complete. Schema already up to date.")
+    elif applied == 1:
+        click.echo("Migrations complete. 1 new migration applied.")
+    else:
+        click.echo(f"Migrations complete. {applied} new migrations applied.")
 
 
 @cli.command()
@@ -94,6 +102,9 @@ async def _status() -> None:
         click.echo(f"  Error: {health.get('error', 'unknown')}")
 
     await close_pool()
+
+    if health["status"] != "healthy":
+        raise SystemExit(1)
 
 
 @cli.command()
@@ -144,6 +155,18 @@ def _duration(started_at: object, ended_at: object) -> str:
         return "—"
     seconds = (ended_at - started_at).total_seconds()  # type: ignore[operator]
     return f"{seconds:.1f}s"
+
+
+def _truncate(text: str, width: int) -> str:
+    """Truncate text to width, appending '…' when shortened.
+
+    The '…' marker prevents the silent-truncation footgun where a workflow
+    named ``daily-digest-prod`` looks identical to ``daily-digest-prod-v2``
+    in tabular CLI output. Callers still need to pad the result to width.
+    """
+    if len(text) <= width:
+        return text
+    return text[: width - 1] + "…"
 
 
 @cli.command()
@@ -198,7 +221,7 @@ async def _history(limit: int, workflow_name: str | None, status: str | None) ->
         started = row["started_at"].strftime("%Y-%m-%d %H:%M:%S")
         duration = _duration(row["started_at"], row["ended_at"])
         click.echo(
-            f"{short_id:<10}{row['workflow_name'][:23]:<24}"
+            f"{short_id:<10}{_truncate(row['workflow_name'], 23):<24}"
             f"{row['status']:<10}{started:<22}{duration}"
         )
 
@@ -214,8 +237,18 @@ def show(run_id: str) -> None:
     asyncio.run(_show(run_id))
 
 
+_RUN_ID_RE = re.compile(r"^[0-9a-f-]+$")
+
+
 async def _show(run_id: str) -> None:
     from src.db import close_pool, fetch_all, init_pool
+
+    if not _RUN_ID_RE.match(run_id):
+        click.echo(
+            "Error: run_id must contain only hex digits and hyphens",
+            err=True,
+        )
+        raise SystemExit(1)
 
     await init_pool()
     try:
@@ -383,7 +416,7 @@ async def _list(filter_enabled: bool, filter_disabled: bool, workflow_name: str 
         next_fire = row["next_run_at"].strftime("%Y-%m-%d %H:%M:%S") if row["next_run_at"] else "—"
         enabled = "yes" if row["enabled"] else "no"
         click.echo(
-            f"{row['workflow_name'][:19]:<20}{row['cron_expression'][:15]:<16}"
+            f"{_truncate(row['workflow_name'], 19):<20}{_truncate(row['cron_expression'], 15):<16}"
             f"{enabled:<10}{last_run:<22}{next_fire:<22}{row['workflow_file_path']}"
         )
 
@@ -717,14 +750,16 @@ async def _list_triggers() -> None:
     for row in schedules:
         enabled = "yes" if row["enabled"] else "no"
         click.echo(
-            f"{'cron':<10}{row['workflow_name'][:23]:<24}{enabled:<10}{row['cron_expression']}"
+            f"{'cron':<10}{_truncate(row['workflow_name'], 23):<24}{enabled:<10}{row['cron_expression']}"
         )
     for row in webhooks:
         enabled = "yes" if row["enabled"] else "no"
-        click.echo(f"{'webhook':<10}{row['workflow_name'][:23]:<24}{enabled:<10}—")
+        click.echo(f"{'webhook':<10}{_truncate(row['workflow_name'], 23):<24}{enabled:<10}—")
     for row in watchers:
         enabled = "yes" if row["enabled"] else "no"
-        click.echo(f"{'file':<10}{row['workflow_name'][:23]:<24}{enabled:<10}{row['watched_path']}")
+        click.echo(
+            f"{'file':<10}{_truncate(row['workflow_name'], 23):<24}{enabled:<10}{row['watched_path']}"
+        )
 
 
 @cli.command()
