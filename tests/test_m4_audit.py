@@ -159,9 +159,7 @@ async def test_mcp_step_honors_per_step_timeout(monkeypatch):
     # call_tool, INCLUDING handshake. Locked behavior.
     monkeypatch.setenv("MOCK_MCP_TOOL_BEHAVIOR", "slow")
     monkeypatch.setenv("MOCK_MCP_SLOW_SECONDS", "3.0")
-    step = McpToolStep(
-        name="t", server_command=_mock_server_cmd(), tool="x", timeout_seconds=0.5
-    )
+    step = McpToolStep(name="t", server_command=_mock_server_cmd(), tool="x", timeout_seconds=0.5)
     result = await McpToolExecutor().execute(step)
     assert result.success is False
     assert "timed out after 0.5s" in result.error
@@ -184,9 +182,7 @@ async def test_llm_step_honors_per_step_timeout(monkeypatch):
 
     monkeypatch.setattr(httpx.AsyncClient, "__init__", patched_init)
 
-    step = LLMStep(
-        name="ask", prompt="hi", model="test", timeout_seconds=0.5
-    )
+    step = LLMStep(name="ask", prompt="hi", model="test", timeout_seconds=0.5)
     result = await LLMExecutor().execute(step)
     assert result.success is False
     assert "could not reach" in result.error
@@ -223,6 +219,4 @@ async def test_mcp_stderr_goes_to_logs_not_to_step_output(caplog, monkeypatch):
         result = await McpToolExecutor().execute(step)
     assert result.success is True
     assert "warning from server" not in result.output  # NOT in workflow data
-    assert any(
-        "stderr tail" in rec.message for rec in caplog.records
-    )  # IS in logs
+    assert any("stderr tail" in rec.message for rec in caplog.records)  # IS in logs

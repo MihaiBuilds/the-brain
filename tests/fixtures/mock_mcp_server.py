@@ -117,9 +117,7 @@ def _handle_tools_call(request: dict) -> None:
                 "jsonrpc": "2.0",
                 "id": request_id,
                 "result": {
-                    "content": [
-                        {"type": "text", "text": f"tool {params.get('name')!r} ran"}
-                    ],
+                    "content": [{"type": "text", "text": f"tool {params.get('name')!r} ran"}],
                     "isError": False,
                 },
             }

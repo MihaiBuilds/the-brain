@@ -230,9 +230,7 @@ async def test_llm_max_tokens_flows_into_payload(monkeypatch):
         return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}}]})
 
     _mock_httpx(monkeypatch, handler)
-    await LLMExecutor().execute(
-        LLMStep(name="g", prompt="hi", model="test-model", max_tokens=42)
-    )
+    await LLMExecutor().execute(LLMStep(name="g", prompt="hi", model="test-model", max_tokens=42))
     assert seen_payloads[0]["max_tokens"] == 42
 
 

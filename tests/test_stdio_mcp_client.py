@@ -63,9 +63,7 @@ async def test_connect_fails_on_missing_result(monkeypatch):
 
 async def test_connect_fails_on_unspawnable_command():
     with pytest.raises(McpProtocolError, match="could not spawn"):
-        async with StdioMcpClient(
-            "/nonexistent/path/to/mcp-server --does-not-exist"
-        ):
+        async with StdioMcpClient("/nonexistent/path/to/mcp-server --does-not-exist"):
             pass
 
 
@@ -91,9 +89,7 @@ async def test_call_tool_returns_server_result():
 async def test_call_tool_passes_arguments_through(monkeypatch):
     monkeypatch.setenv("MOCK_MCP_TOOL_BEHAVIOR", "echo-args")
     async with StdioMcpClient(_mock_server_cmd()) as client:
-        result = await client.call_tool(
-            "echo", {"foo": "bar", "n": 42}, timeout=5.0
-        )
+        result = await client.call_tool("echo", {"foo": "bar", "n": 42}, timeout=5.0)
         # The mock server echoes args as JSON in the content text.
         import json as _json
 

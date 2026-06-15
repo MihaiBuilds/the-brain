@@ -166,9 +166,7 @@ async def test_mcp_executor_treats_iserror_true_as_failure(monkeypatch):
 
 
 def _previous_results() -> dict[str, StepResult]:
-    return {
-        "first": StepResult(step_name="first", success=True, output="from-first")
-    }
+    return {"first": StepResult(step_name="first", success=True, output="from-first")}
 
 
 def test_resolve_step_substitutes_server_command():
