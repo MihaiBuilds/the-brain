@@ -1,6 +1,6 @@
 [project]
 name = "the-brain"
-version = "0.0.1"
+version = "1.0.1"
 description = "Workflow orchestrator for the MihaiBuilds ecosystem"
 readme = "README.md"
 license = "MIT"
