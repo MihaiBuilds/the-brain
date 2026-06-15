@@ -124,6 +124,129 @@ def test_readme_hero_names_four_step_types():
 
 
 # ---------------------------------------------------------------------------
+# MV-parity sections added/reordered in the post-#41 corrective pass
+# ---------------------------------------------------------------------------
+
+
+def test_readme_has_no_docker_quick_start_section():
+    """The Python-from-source install path lives in its own section, mirroring
+    MV. Non-Docker users shouldn't have to read the Docker walkthrough first."""
+    text = _readme_text()
+    assert "## No-Docker quick start" in text
+    # Must reference the pip-install + brain migrate path to be useful.
+    assert "pip install -e ." in text
+    assert "brain migrate" in text
+
+
+def test_readme_has_features_section_not_what_v1_0_does():
+    """The MV-shape ``## Features`` section replaces the pre-v1.0
+    ``## What v1.0 does`` heading. Locks the rename so future drift
+    can't revert to the build-in-public phrasing."""
+    text = _readme_text()
+    assert "## Features" in text
+    # Match the heading as a whole line (\n on both sides) so the substring
+    # doesn't false-positive on ``### What v1.0 doesn't ship``.
+    assert "\n## What v1.0 does\n" not in text
+
+
+def test_readme_has_architecture_section_with_three_deliberate_choices():
+    """The ``## Architecture`` section mirrors MV's "three deliberate things"
+    pattern. Names the three locked choices so an evaluator sees the shape
+    in 30 seconds without reading the deeper integration walkthroughs."""
+    text = _readme_text()
+    assert "## Architecture" in text
+    # The three load-bearing claims of the architecture must be present.
+    assert "One database" in text
+    assert "Process boundary" in text
+    assert "Per-step spawn" in text
+
+
+def test_readme_has_tech_stack_section_not_tech():
+    """The pre-v1.0 ``## Tech`` heading is renamed to ``## Tech Stack`` for
+    MV-parity and moved to early position. Locks both the rename and the
+    removal of the old heading."""
+    text = _readme_text()
+    assert "## Tech Stack" in text
+    assert "## Tech\n" not in text  # standalone ``## Tech`` heading
+    assert "\n## Tech\n" not in text
+
+
+def test_readme_has_how_it_works_section():
+    """The ``## How It Works`` section names the workflow execution model,
+    the four trigger surfaces, and the substitution boundaries. Brain-specific
+    content mirroring MV's section shape."""
+    text = _readme_text()
+    assert "## How It Works" in text
+    # The three locked sub-headings of How It Works.
+    assert "### Workflow execution" in text
+    assert "### Trigger surfaces" in text
+    assert "### Substitution model" in text
+
+
+def test_readme_has_follow_the_build_section():
+    """The ``## Follow the Build`` footer matches MV. Final section, with
+    links to website / blog / GitHub / X. Locks the v1.0 footer so future
+    drift doesn't silently drop the call-to-action."""
+    text = _readme_text()
+    assert "## Follow the Build" in text
+    assert "mihaibuilds.com" in text
+    # X handle reference (without the @ which can drift to "at-")
+    assert "x.com/mihaibuilds" in text
+
+
+def test_readme_does_not_have_what_v1_0_doesnt_do_section():
+    """The pre-v1.0 ``## What v1.0 doesn't do`` section was merged into
+    ``## Limitations`` as a ``### What v1.0 doesn't ship`` sub-group.
+    One section, two grouped lists — kills the redundancy that had two
+    headings doing the same job."""
+    text = _readme_text()
+    # Whole-line match so we don't false-positive on the new
+    # ``### What v1.0 doesn't ship`` sub-heading.
+    assert "\n## What v1.0 doesn't do\n" not in text
+    # The content moved into Limitations as a sub-heading.
+    assert "### What v1.0 doesn't ship" in text
+
+
+def test_readme_section_order_matches_mv_parity():
+    """Lock the v1.0 section order against future drift. Catches the case
+    where someone reorders sections without thinking — section ORDER is
+    part of the ecosystem-parity contract, not just section EXISTENCE."""
+    text = _readme_text()
+    import re
+
+    headings = re.findall(r"^## .+$", text, flags=re.MULTILINE)
+
+    expected = [
+        "## Status",
+        "## Quick Start (Docker)",
+        "## No-Docker quick start",
+        "## Features",
+        "## Architecture",
+        "## Tech Stack",
+        "## How It Works",
+        "## Run workflows on a schedule",
+        "## React to webhooks",
+        "## React to file changes",
+        "## Call an MCP tool from a workflow",
+        "## Trigger types",
+        "## Workflow lifecycle hooks",
+        "## Limitations",
+        "## PRO tier (planned)",
+        "## FAQ",
+        "## License",
+        "## Follow the Build",
+    ]
+
+    assert headings == expected, (
+        f"README section order drifted from MV-parity.\n"
+        f"Expected ({len(expected)} sections):\n  "
+        + "\n  ".join(expected)
+        + f"\nActual ({len(headings)} sections):\n  "
+        + "\n  ".join(headings)
+    )
+
+
+# ---------------------------------------------------------------------------
 # Deliberate omissions — locked so future drift can't quietly re-add them
 # ---------------------------------------------------------------------------
 

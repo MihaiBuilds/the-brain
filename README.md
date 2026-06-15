@@ -18,24 +18,6 @@ Semver from here forward — the public surface (CLI commands, workflow file for
 
 ---
 
-## What v1.0 does
-
-- Run Python-defined workflows from a CLI, persisted to Postgres
-- Four trigger types: manual, cron, HMAC-authenticated webhooks, filesystem watchers
-- Four step types: shell, LLM (OpenAI-compatible), Memory Vault REST, MCP tool calling over stdio
-- Per-step LLM overrides — pick a different provider URL, model, API key, timeout, or max tokens per step
-- Derive-your-own-image pattern for composing The Brain with MCP servers like Memory Vault
-- Long-running scheduler daemon, watcher daemon, and optional HTTP API — each in its own container
-
-## What v1.0 doesn't do
-
-- Multi-user / team workflows
-- Visual workflow builder
-- Rich conditional branching with parallel steps
-- Managed cloud version
-
-Single-tenant, self-hosted, MIT-licensed.
-
 ## Quick Start (Docker)
 
 This walks the runner end to end: install, configure, write a workflow, run it, inspect the result.
@@ -213,6 +195,114 @@ Steps:
 ```
 
 This prints the run's status, timing, and every step's output in execution order.
+
+## No-Docker quick start
+
+If you prefer running without Docker:
+
+### Prerequisites
+
+- Python 3.11+
+- PostgreSQL 16+ (any database The Brain can connect to)
+
+### Setup
+
+```bash
+# Clone
+git clone https://github.com/MihaiBuilds/the-brain.git
+cd the-brain
+
+# Create virtual environment
+python -m venv .venv
+source .venv/bin/activate
+
+# Install dependencies
+pip install -e .
+
+# Configure
+cp .env.example .env
+# Edit .env with your PostgreSQL credentials
+
+# Run migrations
+brain migrate
+
+# Verify
+brain status
+```
+
+### Usage
+
+```bash
+# Run a workflow
+brain run examples/hello.py
+
+# Inspect run history
+brain history
+
+# Show one run in full
+brain show <run_id_prefix>
+```
+
+The scheduler daemon, file watcher daemon, and HTTP API are runnable the same way (`brain daemon`, `brain watcher`, `brain serve`) — each is a separate long-running process.
+
+## Features
+
+- **Run Python-defined workflows** from a CLI, persisted to Postgres so every run is inspectable later
+- **Four trigger types** — manual (CLI), cron, HMAC-authenticated webhooks, filesystem watchers
+- **Four step types** — shell, LLM (OpenAI-compatible), Memory Vault REST, MCP tool calling over stdio
+- **Per-step LLM overrides** — pick a different provider URL, model, API key, timeout, or max tokens per step
+- **Derive-your-own-image pattern** — compose The Brain with any MCP server (Memory Vault, GitHub MCP, Sentry MCP, your own) without bloating the stock image
+- **Separate processes per surface** — scheduler daemon, file watcher daemon, and HTTP API each in its own container, so one crash doesn't take the others down
+- **Single-tenant, self-hosted, MIT-licensed** — your data, your machine, your workflows
+
+## Architecture
+
+Three things are deliberate about this architecture:
+
+- **One database for state.** Run history, schedules, webhook secrets, watcher registrations all live in Postgres. No separate queue, no separate state store, no Redis to operate.
+- **Process boundary per trigger surface.** The scheduler daemon, the file watcher daemon, and the HTTP API are separate processes — each in its own container under its own compose profile. One crashes; the others keep running. Crash recovery is scoped to the surface that owns the run.
+- **Per-step spawn for MCP.** The Brain doesn't host any long-running MCP server. Each `McpToolStep` spawns a fresh subprocess for the duration of one tool call, completes the MCP `initialize` handshake, calls one tool, and tears the subprocess down. Isolation per call: a crashing MCP server only kills one step.
+
+See [ARCHITECTURE.md](ARCHITECTURE.md) for the deeper walk-through (process model, recovery semantics, substitution model, MCP transport choice).
+
+## Tech Stack
+
+- **Python 3.11+** — async backend with psycopg 3
+- **PostgreSQL** — single state engine across the ecosystem (workflow runs, schedules, webhook secrets, watcher registrations, daemon heartbeats)
+- **Click** — the CLI surface
+- **FastAPI + uvicorn** — the optional HTTP API for webhook triggers
+- **watchdog** — file system event observation for the watcher daemon
+- **MCP (Model Context Protocol)** — stdio transport for the `McpToolStep`
+- **Docker / Docker Compose** — one-command deployment with multiple profiles (`api`, `watcher`)
+- **Integrates with [Memory Vault](https://github.com/MihaiBuilds/memory-vault)** — either over its REST API (`MemoryVaultStep`) or over its MCP server (`McpToolStep` + derive-pattern)
+
+## How It Works
+
+### Workflow execution
+
+A workflow is a Python file defining a module-level `workflow` variable: a name plus a linear list of steps. The Brain imports the file, runs the steps top to bottom, and persists every run to Postgres. Each step's output (a string) is available to downstream steps via the `{previous.step_name}` placeholder. A step failure halts the workflow — the remaining steps don't run, the run row is persisted with the failure visible in `brain show <run_id>`. There is no continue-on-error in v1.0; if a workflow needs partial success semantics, the step author writes them explicitly into the step.
+
+### Trigger surfaces
+
+The Brain ships four trigger types, each owned by a different process:
+
+- **Manual** — `brain run path/to/workflow.py` runs the workflow once, on demand, in the current shell.
+- **Cron** — the scheduler daemon polls `workflow_schedules` every 10 seconds, fires due workflows sequentially in its own process, and advances `next_run_at` after each fire. SIGTERM gracefully shuts down after the current workflow finishes.
+- **Webhook** — the HTTP API exposes `POST /webhook/<name>` with HMAC-SHA256 signature verification. The `X-Brain-Signature: sha256=<hex>` header is GitHub-compatible. Webhooks are gated by an `THE_BRAIN_API_TOKEN` bearer at the boundary; the API refuses to start without one.
+- **File watcher** — the watcher daemon observes registered directories via the `watchdog` library, debounces events on a 500ms window per `(workflow, path)`, and fires the registered workflow with the file path in `{trigger.path}`. One container, one daemon, one process per host.
+
+All three persistent triggers (cron, webhook, file) share the same `workflow_runs` table. `brain history`, `brain show`, and `brain list-triggers` give a unified view across all four trigger types.
+
+### Substitution model
+
+Step output flows downstream via `{previous.X}` and `{trigger.X}` placeholders. The substitution is **string-only and flat** — no nested-field access, no recursion into dict values. `{previous.recall}` becomes the recall step's output as a single string; if a downstream step needs a JSON field, an upstream step writes it directly to its output. This keeps the contract simple and the substitution surface inspectable.
+
+Two boundaries are sharp:
+
+- `McpToolStep.tool` is **never substituted** — it's an MCP protocol method name, not user data. The workflow file is the orchestrator; the LLM doesn't decide which tool to call.
+- `args` **keys** are never substituted — only values, and only string values. Non-string values (ints, bools, nested dicts) pass through unchanged.
+
+These are pinned by tests so a future refactor can't quietly drop them.
 
 ## Run workflows on a schedule
 
@@ -590,7 +680,18 @@ The Brain has a small number of named extension points worth knowing about. Each
 
 ## Limitations
 
-Honest about what v1.0 doesn't do well:
+### What v1.0 doesn't ship
+
+Scope locked deliberately — these are not on the v1.0 roadmap, and may come in a later release if there's real demand signal:
+
+- Multi-user / team workflows
+- Visual workflow builder
+- Rich conditional branching with parallel steps
+- Managed cloud version
+
+### Honest v1.0 limits
+
+What v1.0 doesn't do well, named openly so you find out before deploying:
 
 - **Reasoning-style LLMs need bigger budgets.** Default `timeout_seconds=60` and the LLM's own default `max_tokens` fail on qwen 3.x+ / o1-style / R1-style / QwQ models — they consume token budget on internal reasoning before producing visible content. Set `timeout_seconds=600` and `max_tokens=8000+` for a 9B reasoning model. Instruct models (Ministral, Mistral Instruct, Llama Instruct) don't have this behavior.
 - **MCP stdio transport only.** HTTP transport (the streamable-HTTP MCP variant) is not in v1.0. Brings its own auth surface (Bearer / mTLS / OAuth) that v1.0 doesn't address.
@@ -650,13 +751,15 @@ v1.0 is the first stable release. The runtime, scheduler, watcher, and API all r
 
 No. v1.0 is single-tenant: one Postgres database per deployment, one shared scheduler, one shared watcher, one shared API token. Team features (per-user workflows, per-user run history, RBAC, per-user webhook secrets) are a candidate for a future PRO tier.
 
-## Tech
-
-- Python 3.11+
-- PostgreSQL (single state engine across the ecosystem)
-- Docker / Docker Compose for deployment
-- Integrates with Memory Vault via its REST API or via Memory Vault's MCP server (derive-pattern)
-
 ## License
 
 MIT — see [LICENSE](LICENSE).
+
+## Follow the Build
+
+- Website: [mihaibuilds.com](https://mihaibuilds.com)
+- Blog: [mihaibuilds.com/blog](https://mihaibuilds.com/blog)
+- GitHub: [@MihaiBuilds](https://github.com/MihaiBuilds)
+- X: [@mihaibuilds](https://x.com/mihaibuilds)
+
+> Watch the repo to follow along.
