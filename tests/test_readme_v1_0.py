@@ -183,6 +183,19 @@ def test_readme_has_how_it_works_section():
     assert "### Substitution model" in text
 
 
+def test_readme_has_troubleshooting_section_referencing_brain_diagnose():
+    """The ``## Troubleshooting`` section documents the ``brain diagnose``
+    command and warns users to review the bundle before posting to a
+    public issue tracker. Locks both the section presence and the
+    review-before-post discipline."""
+    text = _readme_text()
+    assert "## Troubleshooting" in text
+    assert "brain diagnose" in text
+    # The defense-in-depth warning about reviewing the bundle MUST be in
+    # the troubleshooting section — secret hygiene is part of the contract.
+    assert "Review every file" in text
+
+
 def test_readme_has_follow_the_build_section():
     """The ``## Follow the Build`` footer matches MV. Final section, with
     links to website / blog / GitHub / X. Locks the v1.0 footer so future
@@ -230,6 +243,7 @@ def test_readme_section_order_matches_mv_parity():
         "## Call an MCP tool from a workflow",
         "## Trigger types",
         "## Workflow lifecycle hooks",
+        "## Troubleshooting",
         "## Limitations",
         "## PRO tier (planned)",
         "## FAQ",

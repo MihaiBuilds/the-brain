@@ -289,3 +289,27 @@ def test_history_truncates_long_workflow_name_with_ellipsis():
     result = CliRunner().invoke(cli, ["history"])
     assert result.exit_code == 0
     assert "…" in result.output
+
+
+# ---------------------------------------------------------------------------
+# brain diagnose — bundle a redacted snapshot for bug reports
+# ---------------------------------------------------------------------------
+
+
+def test_diagnose_creates_zip_in_current_directory(tmp_path, monkeypatch):
+    """`brain diagnose` writes a zip to the current directory whose name
+    matches the locked timestamped pattern, and exits 0."""
+    import os
+    import re
+
+    monkeypatch.chdir(tmp_path)
+    result = CliRunner().invoke(cli, ["diagnose"])
+    assert result.exit_code == 0, result.output
+
+    written = [f for f in os.listdir(tmp_path) if f.startswith("brain-diagnostic-")]
+    assert len(written) == 1
+    assert re.match(r"^brain-diagnostic-\d{4}-\d{2}-\d{2}-\d{6}\.zip$", written[0])
+
+    # Output names the file path so the user can find it.
+    assert "Diagnostic bundle written" in result.output
+    assert written[0] in result.output
