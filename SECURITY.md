@@ -95,6 +95,37 @@ Workflow definitions are code the operator wrote. Run history (step output, erro
 | Compromised host machine | Out of scope by design — the host's OS/admin is the trust boundary |
 | Docker socket access from the container | The Brain container does **not** mount `/var/run/docker.sock`. The Docker step is intentionally absent from v1.0 |
 
+## Trust Posture for Workflow Inputs
+
+Workflow files are **trusted Python authored by the operator**, but the *inputs* that flow into a workflow at runtime — webhook bodies, file-change events, scheduler timestamps — are **not** automatically trusted. The substitution model (`{previous.X}`, `{trigger.X}`) inserts those values into step fields **textually**, which means a `ShellStep.command` that interpolates a webhook payload is a textbook command-injection surface:
+
+```python
+# DANGEROUS — webhook body flows verbatim into /bin/sh
+ShellStep(name="echo", command="echo {trigger.message}")
+```
+
+A malicious caller can POST `{"message": "x; rm -rf $HOME"}` and execute arbitrary shell. The Brain does **not** auto-escape interpolated values, because workflow authors sometimes legitimately want shell metacharacters in their commands.
+
+### Safe patterns
+
+- **Pass untrusted input through arguments, not the command string.** Use a fixed `ShellStep.command` that reads from an environment variable populated by a prior step, or pass values as separate `argv` elements via a wrapper script. Same advice as `subprocess.run(..., shell=False)` in plain Python.
+- **For `McpToolStep`**, interpolated values land in the `args` dict and are passed as MCP tool arguments — they do not pass through a shell. Substitution into `McpToolStep.args` is the recommended path for untrusted external data.
+- **For `LLMStep` and `MemoryVaultStep`**, interpolated values become part of the prompt or the JSON body — no shell execution surface. Treat them like any other untrusted string in an LLM/HTTP context (prompt-injection caveats apply for `LLMStep`).
+
+### What The Brain enforces
+
+- Webhook triggers require an HMAC signature header verified with `hmac.compare_digest` against a secret minted via `brain register-webhook <workflow>`. Forged webhooks cannot reach the runner.
+- The HTTP API requires the `THE_BRAIN_API_TOKEN` bearer token on every endpoint except `/health`, verified with `secrets.compare_digest`. Unset → the server refuses to start with a clear error.
+- `brain show` rejects SQL `LIKE` metacharacters (`%`, `_`) in the run-ID prefix so wildcard queries can't return runs the user did not ask for.
+- All raw SQL uses `%s` parameterization; user values never interpolate into SQL strings (verified at v1.0 audit with `bandit -r src/`).
+- The diagnostic bundle uses an explicit env-var allow-list; `DB_PASSWORD`, `LLM_API_KEY`, `MEMORY_VAULT_TOKEN`, and `THE_BRAIN_API_TOKEN` are recorded as presence-only and never written by value.
+
+### What's the operator's job
+
+- **TLS for non-localhost exposure.** The HTTP API binds `0.0.0.0` by default so it works inside a Docker container; if you expose it beyond localhost, put a reverse proxy with TLS in front. The bearer token is useless over cleartext HTTP on an untrusted network.
+- **Workflow file hygiene.** A malicious or compromised workflow file already runs arbitrary Python on the host — review workflows from third parties the same way you would review any code before running it.
+- **Webhook secret rotation.** `brain register-webhook` mints a new secret; revoke old ones when rotating. The Brain stores SHA-256 hashes only — the plaintext is shown once at registration.
+
 ## Static Analysis & Dependency Health
 
 Public-tier security tooling enabled in CI:

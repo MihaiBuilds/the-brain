@@ -12,7 +12,7 @@ The Brain is the runtime underneath. You define a workflow as a Python file with
 
 ## Status
 
-**v1.0 — released YYYY-MM-DD.** First stable release of The Brain. Five milestones (M1 bare runner, M2 triggers + state, M3 webhooks + file watchers, M4 MCP tools + multi-LLM, M5 polish + launch) all shipped and stable.
+**v1.0 — released 2026-06-15.** First stable release of The Brain. Stable workflow runner, CLI, HTTP API with bearer auth, scheduler + watcher daemons with cron/webhook/file triggers, MCP tool integration, structured logging, and a redacting diagnostic bundler.
 
 Release notes: [GitHub Releases](https://github.com/MihaiBuilds/the-brain/releases). Build-in-public story: the [mihaibuilds.com blog series](https://mihaibuilds.com/blog).
 
@@ -406,7 +406,7 @@ LLMStep(
 )
 ```
 
-On the very first run there is no previous successful run, so `{previous.summary}` is unresolvable — that step fails with a clear error, same strict-by-design behavior as M1's intra-run `{step_name}` placeholder. Once one run has succeeded, every subsequent run sees its output.
+On the very first run there is no previous successful run, so `{previous.summary}` is unresolvable — that step fails with a clear error, same strict-by-design behavior as the intra-run `{step_name}` placeholder. Once one run has succeeded, every subsequent run sees its output.
 
 ### Daemon lifecycle
 
@@ -700,7 +700,7 @@ Structured JSON logging is on by default in the Docker containers (`LOG_FORMAT=j
 
 ### What v1.0 doesn't ship
 
-Scope locked deliberately — these are not on the v1.0 roadmap, and may come in a later release if there's real demand signal:
+Out of scope for v1.0 by design — these are not on the roadmap, and may come in a later release if there's real demand signal:
 
 - Multi-user / team workflows
 - Visual workflow builder
@@ -763,7 +763,7 @@ This is by design. The Brain ships an inspectable runtime, not a black box.
 
 v1.0 is the first stable release. The runtime, scheduler, watcher, and API all run with a hermetic test suite (300+ tests against real Postgres, no mocks at integration boundaries) and a real end-to-end ecosystem-integration test against Memory Vault. The semver promise on the public surface holds from v1.0 forward.
 
-"Production-ready" is a marketing claim a single maintainer can't make for someone else's environment. What's true: v1.0 is what The Brain shipped with, the failure modes are documented, the limitations are honest, and the discipline that built M1-M4 ships with M5.
+"Production-ready" is a marketing claim a single maintainer can't make for someone else's environment. What's true: v1.0 is what The Brain shipped with, the failure modes are documented, the limitations are honest, and the same discipline that built each subsystem ships in the v1.0 cut.
 
 ### Can multiple users share workflows in v1.0?
 
