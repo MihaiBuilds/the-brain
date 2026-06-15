@@ -678,6 +678,22 @@ The Brain has a small number of named extension points worth knowing about. Each
 - **First failure halts the workflow** — no continue-on-error in v1.0. The remaining steps don't run. The run row is persisted with the failure visible in `brain show <run_id>`.
 - **stderr is logged, not in `StepResult.output`** — MCP server stderr is captured to a rolling ~1 KB tail and logged at step boundary. Workflow data and debug data are different surfaces; a `{previous.X}` reference never includes stderr noise.
 
+## Troubleshooting
+
+When something goes wrong, `brain diagnose` bundles your environment, version, status, and recent logs into a single zip suitable for attaching to a bug report:
+
+```bash
+brain diagnose
+```
+
+The bundle lands in the current directory as `brain-diagnostic-YYYY-MM-DD-HHMMSS.zip`. It includes a `MODE.txt` marker (Docker vs. no-Docker), `os_info.txt`, `brain_version.txt`, the output of `brain status`, filtered non-secret environment variables, and (under Docker) the last 1000 lines of the brain container and the last 500 lines of the db container.
+
+Secrets are redacted by an allow-list — `DB_PASSWORD`, `LLM_API_KEY`, `MEMORY_VAULT_TOKEN`, and `THE_BRAIN_API_TOKEN` values are never written into the bundle; only their presence is recorded. The bundle ships with a `REDACTED_FIELDS.txt` explainer.
+
+Logs are included unfiltered. If a workflow has logged a secret to stdout, that string will be in the bundle. **Review every file in the zip before posting it to a public issue tracker.**
+
+Structured JSON logging is on by default in the Docker containers (`LOG_FORMAT=json`). Set `LOG_FORMAT=keyvalue` to switch to human-readable output when tailing logs locally.
+
 ## Limitations
 
 ### What v1.0 doesn't ship

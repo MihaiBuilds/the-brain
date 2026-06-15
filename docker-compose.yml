@@ -38,6 +38,9 @@ services:
       LLM_API_KEY: ${LLM_API_KEY:-lm-studio}
       LLM_MODEL: ${LLM_MODEL:-}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      # JSON logs by default in production containers; override to
+      # `keyvalue` for a friendlier read when tailing logs by hand.
+      LOG_FORMAT: ${LOG_FORMAT:-json}
     # Healthcheck — `brain daemon-status` reads daemon_heartbeats.last_tick_at
     # and exits 0 only if the daemon has ticked within the last 30 seconds.
     # start_period covers migrations + the first tick before the healthcheck
@@ -79,6 +82,9 @@ services:
       LLM_API_KEY: ${LLM_API_KEY:-lm-studio}
       LLM_MODEL: ${LLM_MODEL:-}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      # JSON logs by default in production containers; override to
+      # `keyvalue` for a friendlier read when tailing logs by hand.
+      LOG_FORMAT: ${LOG_FORMAT:-json}
       # The API refuses to start without this token. Set it in .env or
       # the shell environment before bringing the `api` profile up.
       THE_BRAIN_API_TOKEN: ${THE_BRAIN_API_TOKEN:-}
@@ -119,6 +125,9 @@ services:
       LLM_API_KEY: ${LLM_API_KEY:-lm-studio}
       LLM_MODEL: ${LLM_MODEL:-}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      # JSON logs by default in production containers; override to
+      # `keyvalue` for a friendlier read when tailing logs by hand.
+      LOG_FORMAT: ${LOG_FORMAT:-json}
     # Healthcheck — `brain watcher-status` reads the watcher heartbeat
     # under daemon_id `hostname:watcher` and exits 0 only if the
     # watcher has ticked within the last 30 seconds.

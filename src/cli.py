@@ -25,10 +25,10 @@ The Brain — command-line interface.
     brain disable-watcher     Soft-disable a watcher (the daemon will skip it)
     brain enable-watcher      Re-enable a watcher
     brain unregister-watcher  Hard-delete a watcher registration
+    brain diagnose            Bundle a redacted snapshot for bug reports
 """
 
 import asyncio
-import logging
 import re
 from datetime import UTC, datetime
 from importlib.metadata import version as _pkg_version
@@ -36,12 +36,9 @@ from pathlib import Path
 
 import click
 
-from src.config import settings
+from src.logging_config import configure_logging
 
-logging.basicConfig(
-    level=settings.log_level,
-    format="%(asctime)s %(levelname)s %(name)s — %(message)s",
-)
+configure_logging()
 
 
 @click.group()
@@ -1004,6 +1001,34 @@ async def _unregister_watcher(name: str) -> None:
         raise SystemExit(1)
 
     click.echo(f"Unregistered watcher {name!r}.")
+
+
+# ---------------------------------------------------------------------------
+# Diagnostic bundle
+# ---------------------------------------------------------------------------
+
+
+@cli.command()
+def diagnose() -> None:
+    """Bundle a redacted diagnostic snapshot for bug reports.
+
+    Collects environment (filtered to non-secret keys), OS info, Brain
+    version, ``brain status`` output, and Docker logs if Docker is
+    available. Writes a single zip file to the current directory whose
+    name embeds a UTC timestamp.
+
+    The bundle redacts known secret env vars (DB password, LLM API key,
+    webhook tokens) before writing — only their presence is recorded,
+    never their value. Log files are included unfiltered; review the
+    bundle before posting it to a public issue tracker.
+    """
+    from src.diagnose import build_bundle
+
+    bundle_path = build_bundle()
+    click.echo(f"Diagnostic bundle written to {bundle_path}")
+    click.echo("")
+    click.echo("Review every file in the zip before posting it to a public issue tracker —")
+    click.echo("logs are NOT filtered for accidental secrets in workflow output.")
 
 
 def main() -> None:
