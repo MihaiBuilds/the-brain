@@ -35,9 +35,7 @@ class McpToolExecutor:
         try:
             async with StdioMcpClient(step.server_command) as client:
                 try:
-                    result = await client.call_tool(
-                        step.tool, step.args, step.timeout_seconds
-                    )
+                    result = await client.call_tool(step.tool, step.args, step.timeout_seconds)
                 except McpProtocolError as exc:
                     _log_stderr_tail(step, client.stderr_tail)
                     return _failure(step.name, str(exc))

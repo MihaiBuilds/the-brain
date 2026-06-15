@@ -105,9 +105,7 @@ class StdioMcpClient:
             await asyncio.wait_for(self._handshake(), timeout=_HANDSHAKE_TIMEOUT)
         except TimeoutError as exc:
             await self.close()
-            raise McpProtocolError(
-                f"MCP handshake timed out after {_HANDSHAKE_TIMEOUT}s"
-            ) from exc
+            raise McpProtocolError(f"MCP handshake timed out after {_HANDSHAKE_TIMEOUT}s") from exc
         except McpProtocolError:
             await self.close()
             raise
@@ -166,9 +164,7 @@ class StdioMcpClient:
 
         async with self._call_lock:
             try:
-                return await asyncio.wait_for(
-                    self._do_call_tool(tool_name, args), timeout=timeout
-                )
+                return await asyncio.wait_for(self._do_call_tool(tool_name, args), timeout=timeout)
             except TimeoutError as exc:
                 raise McpProtocolError(
                     f"MCP tool call '{tool_name}' timed out after {timeout}s"
@@ -205,9 +201,7 @@ class StdioMcpClient:
             )
         if "error" in response:
             err = response["error"]
-            raise McpProtocolError(
-                f"handshake: server returned error: {err}"
-            )
+            raise McpProtocolError(f"handshake: server returned error: {err}")
         if "result" not in response:
             raise McpProtocolError("handshake: response missing 'result' field")
 
@@ -220,9 +214,7 @@ class StdioMcpClient:
             }
         )
 
-    async def _do_call_tool(
-        self, tool_name: str, args: dict[str, Any]
-    ) -> dict[str, Any]:
+    async def _do_call_tool(self, tool_name: str, args: dict[str, Any]) -> dict[str, Any]:
         request_id = self._next_id()
         await self._write_message(
             {
@@ -245,14 +237,10 @@ class StdioMcpClient:
             )
         if "error" in response:
             err = response["error"]
-            raise McpProtocolError(
-                f"tools/call returned error: {err}"
-            )
+            raise McpProtocolError(f"tools/call returned error: {err}")
         result = response.get("result")
         if not isinstance(result, dict):
-            raise McpProtocolError(
-                "tools/call: response 'result' field missing or not an object"
-            )
+            raise McpProtocolError("tools/call: response 'result' field missing or not an object")
         return result
 
     async def _write_message(self, message: dict[str, Any]) -> None:
@@ -297,10 +285,7 @@ class StdioMcpClient:
                     return
                 self._stderr_tail.append(chunk)
                 self._stderr_tail_size += len(chunk)
-                while (
-                    self._stderr_tail_size > _STDERR_TAIL_BYTES
-                    and len(self._stderr_tail) > 1
-                ):
+                while self._stderr_tail_size > _STDERR_TAIL_BYTES and len(self._stderr_tail) > 1:
                     dropped = self._stderr_tail.popleft()
                     self._stderr_tail_size -= len(dropped)
         except (asyncio.CancelledError, ConnectionResetError):

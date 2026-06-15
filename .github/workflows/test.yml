@@ -1,0 +1,58 @@
+name: Tests
+
+on:
+  push:
+    branches: [main, "m*"]
+  pull_request:
+    branches: [main, "m*"]
+
+concurrency:
+  group: test-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pytest:
+    name: pytest (Python 3.11, Postgres 16)
+    runs-on: ubuntu-latest
+
+    services:
+      db:
+        image: postgres:16
+        env:
+          POSTGRES_DB: the_brain
+          POSTGRES_USER: the_brain
+          POSTGRES_PASSWORD: the_brain
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U the_brain -d the_brain"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    env:
+      DB_HOST: localhost
+      DB_PORT: "5432"
+      DB_NAME: the_brain
+      DB_USER: the_brain
+      DB_PASSWORD: the_brain
+      # API token required for CLI tests that touch `brain serve`.
+      THE_BRAIN_API_TOKEN: ci-test-token
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install package + dev deps
+        run: |
+          pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Run pytest
+        run: pytest -v --tb=short

@@ -62,7 +62,9 @@ class LLMStep(_StepBase):
     temperature: float = Field(default=0.7, ge=0.0, le=2.0)
     provider_url: str | None = Field(default=None, description="Override LLM_BASE_URL.")
     api_key: str | None = Field(default=None, description="Override LLM_API_KEY.")
-    timeout_seconds: float | None = Field(default=None, gt=0.0, description="Override the default 120s timeout.")
+    timeout_seconds: float | None = Field(
+        default=None, gt=0.0, description="Override the default 120s timeout."
+    )
     max_tokens: int | None = Field(default=None, ge=1, description="Cap response length.")
 
 

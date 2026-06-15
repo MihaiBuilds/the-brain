@@ -1,5 +1,7 @@
 # The Brain
 
+[![Tests](https://github.com/MihaiBuilds/the-brain/actions/workflows/test.yml/badge.svg)](https://github.com/MihaiBuilds/the-brain/actions/workflows/test.yml)
+
 **The workflow runtime for the [MihaiBuilds](https://mihaibuilds.com) ecosystem.** Self-hosted Postgres-backed scheduler, four trigger types (manual, cron, webhook, file), and four step types (shell, LLM, Memory Vault REST, MCP).
 
 Every workflow you write today drifts into a one-off script tomorrow. Cron lines on a server you forgot. A bash file glued to a Python script glued to a webhook handler. State scattered across `.env` files, log files, and the database the script happens to know about. Repeatability is a checkbox; observability is `tail -f`.
