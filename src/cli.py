@@ -25,24 +25,24 @@ The Brain — command-line interface.
     brain disable-watcher     Soft-disable a watcher (the daemon will skip it)
     brain enable-watcher      Re-enable a watcher
     brain unregister-watcher  Hard-delete a watcher registration
+    brain diagnose            Bundle a redacted snapshot for bug reports
 """
 
 import asyncio
-import logging
+import re
 from datetime import UTC, datetime
+from importlib.metadata import version as _pkg_version
 from pathlib import Path
 
 import click
 
-from src.config import settings
+from src.logging_config import configure_logging
 
-logging.basicConfig(
-    level=settings.log_level,
-    format="%(asctime)s %(levelname)s %(name)s — %(message)s",
-)
+configure_logging()
 
 
 @click.group()
+@click.version_option(_pkg_version("the-brain"), prog_name="brain")
 def cli() -> None:
     """The Brain — workflow orchestrator for the MihaiBuilds ecosystem."""
 
@@ -57,9 +57,14 @@ async def _migrate() -> None:
     from src.db import close_pool, init_pool, run_migrations
 
     await init_pool()
-    await run_migrations()
+    applied = await run_migrations()
     await close_pool()
-    click.echo("Migrations complete.")
+    if applied == 0:
+        click.echo("Migrations complete. Schema already up to date.")
+    elif applied == 1:
+        click.echo("Migrations complete. 1 new migration applied.")
+    else:
+        click.echo(f"Migrations complete. {applied} new migrations applied.")
 
 
 @cli.command()
@@ -94,6 +99,9 @@ async def _status() -> None:
         click.echo(f"  Error: {health.get('error', 'unknown')}")
 
     await close_pool()
+
+    if health["status"] != "healthy":
+        raise SystemExit(1)
 
 
 @cli.command()
@@ -146,6 +154,18 @@ def _duration(started_at: object, ended_at: object) -> str:
     return f"{seconds:.1f}s"
 
 
+def _truncate(text: str, width: int) -> str:
+    """Truncate text to width, appending '…' when shortened.
+
+    The '…' marker prevents the silent-truncation footgun where a workflow
+    named ``daily-digest-prod`` looks identical to ``daily-digest-prod-v2``
+    in tabular CLI output. Callers still need to pad the result to width.
+    """
+    if len(text) <= width:
+        return text
+    return text[: width - 1] + "…"
+
+
 @cli.command()
 @click.option("--limit", default=20, show_default=True, help="Max runs to show.")
 @click.option("--workflow", "workflow_name", help="Filter by workflow name.")
@@ -182,7 +202,7 @@ async def _history(limit: int, workflow_name: str | None, status: str | None) ->
             {where}
             ORDER BY started_at DESC
             LIMIT %s
-            """,
+            """,  # nosec B608 — `where` is a fixed-template assembly of `column = %s` clauses; user values flow through `params` and `%s`, never interpolated into the SQL string
             tuple(params),
         )
     finally:
@@ -198,7 +218,7 @@ async def _history(limit: int, workflow_name: str | None, status: str | None) ->
         started = row["started_at"].strftime("%Y-%m-%d %H:%M:%S")
         duration = _duration(row["started_at"], row["ended_at"])
         click.echo(
-            f"{short_id:<10}{row['workflow_name'][:23]:<24}"
+            f"{short_id:<10}{_truncate(row['workflow_name'], 23):<24}"
             f"{row['status']:<10}{started:<22}{duration}"
         )
 
@@ -214,8 +234,18 @@ def show(run_id: str) -> None:
     asyncio.run(_show(run_id))
 
 
+_RUN_ID_RE = re.compile(r"^[0-9a-f-]+$")
+
+
 async def _show(run_id: str) -> None:
     from src.db import close_pool, fetch_all, init_pool
+
+    if not _RUN_ID_RE.match(run_id):
+        click.echo(
+            "Error: run_id must contain only hex digits and hyphens",
+            err=True,
+        )
+        raise SystemExit(1)
 
     await init_pool()
     try:
@@ -367,7 +397,7 @@ async def _list(filter_enabled: bool, filter_disabled: bool, workflow_name: str 
          LEFT JOIN workflow_runs r ON r.id = s.last_run_id
             {where}
           ORDER BY s.workflow_name
-            """,
+            """,  # nosec B608 — `where` is a fixed-template assembly of `column = %s` clauses; user values flow through `params` and `%s`, never interpolated into the SQL string
             tuple(params),
         )
     finally:
@@ -383,7 +413,7 @@ async def _list(filter_enabled: bool, filter_disabled: bool, workflow_name: str 
         next_fire = row["next_run_at"].strftime("%Y-%m-%d %H:%M:%S") if row["next_run_at"] else "—"
         enabled = "yes" if row["enabled"] else "no"
         click.echo(
-            f"{row['workflow_name'][:19]:<20}{row['cron_expression'][:15]:<16}"
+            f"{_truncate(row['workflow_name'], 19):<20}{_truncate(row['cron_expression'], 15):<16}"
             f"{enabled:<10}{last_run:<22}{next_fire:<22}{row['workflow_file_path']}"
         )
 
@@ -517,7 +547,7 @@ async def _daemon_status() -> None:
 
 @cli.command()
 @click.option("--port", default=8001, show_default=True, help="HTTP port to bind.")
-@click.option("--host", default="0.0.0.0", show_default=True, help="Interface to bind.")
+@click.option("--host", default="0.0.0.0", show_default=True, help="Interface to bind.")  # nosec B104 — 0.0.0.0 is required for the Docker container case; bearer auth via THE_BRAIN_API_TOKEN is mandatory, and operators are expected to reverse-proxy with TLS for any non-localhost exposure (documented in SECURITY.md)
 def serve(port: int, host: str) -> None:
     """Run the HTTP API.
 
@@ -717,14 +747,16 @@ async def _list_triggers() -> None:
     for row in schedules:
         enabled = "yes" if row["enabled"] else "no"
         click.echo(
-            f"{'cron':<10}{row['workflow_name'][:23]:<24}{enabled:<10}{row['cron_expression']}"
+            f"{'cron':<10}{_truncate(row['workflow_name'], 23):<24}{enabled:<10}{row['cron_expression']}"
         )
     for row in webhooks:
         enabled = "yes" if row["enabled"] else "no"
-        click.echo(f"{'webhook':<10}{row['workflow_name'][:23]:<24}{enabled:<10}—")
+        click.echo(f"{'webhook':<10}{_truncate(row['workflow_name'], 23):<24}{enabled:<10}—")
     for row in watchers:
         enabled = "yes" if row["enabled"] else "no"
-        click.echo(f"{'file':<10}{row['workflow_name'][:23]:<24}{enabled:<10}{row['watched_path']}")
+        click.echo(
+            f"{'file':<10}{_truncate(row['workflow_name'], 23):<24}{enabled:<10}{row['watched_path']}"
+        )
 
 
 @cli.command()
@@ -969,6 +1001,34 @@ async def _unregister_watcher(name: str) -> None:
         raise SystemExit(1)
 
     click.echo(f"Unregistered watcher {name!r}.")
+
+
+# ---------------------------------------------------------------------------
+# Diagnostic bundle
+# ---------------------------------------------------------------------------
+
+
+@cli.command()
+def diagnose() -> None:
+    """Bundle a redacted diagnostic snapshot for bug reports.
+
+    Collects environment (filtered to non-secret keys), OS info, Brain
+    version, ``brain status`` output, and Docker logs if Docker is
+    available. Writes a single zip file to the current directory whose
+    name embeds a UTC timestamp.
+
+    The bundle redacts known secret env vars (DB password, LLM API key,
+    webhook tokens) before writing — only their presence is recorded,
+    never their value. Log files are included unfiltered; review the
+    bundle before posting it to a public issue tracker.
+    """
+    from src.diagnose import build_bundle
+
+    bundle_path = build_bundle()
+    click.echo(f"Diagnostic bundle written to {bundle_path}")
+    click.echo("")
+    click.echo("Review every file in the zip before posting it to a public issue tracker —")
+    click.echo("logs are NOT filtered for accidental secrets in workflow output.")
 
 
 def main() -> None:

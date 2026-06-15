@@ -1,40 +1,26 @@
 # The Brain
 
-Workflow orchestrator for the [MihaiBuilds](https://mihaibuilds.com) ecosystem. Connects [Memory Vault](https://github.com/MihaiBuilds/memory-vault), local LLMs, MCP tools, and shell commands into recurring workflows.
+[![Tests](https://github.com/MihaiBuilds/the-brain/actions/workflows/test.yml/badge.svg)](https://github.com/MihaiBuilds/the-brain/actions/workflows/test.yml)
 
-The Brain is a **workflow orchestrator, not an AI agent**. It doesn't make autonomous decisions — it runs Python-defined workflows you author, with full visibility into each step. The intelligence is in the workflow you write; The Brain is the runtime that makes it repeatable and observable.
+**The workflow runtime for the [MihaiBuilds](https://mihaibuilds.com) ecosystem.** Self-hosted Postgres-backed scheduler, four trigger types (manual, cron, webhook, file), and four step types (shell, LLM, Memory Vault REST, MCP).
 
-## Roadmap
+Every workflow you write today drifts into a one-off script tomorrow. Cron lines on a server you forgot. A bash file glued to a Python script glued to a webhook handler. State scattered across `.env` files, log files, and the database the script happens to know about. Repeatability is a checkbox; observability is `tail -f`.
 
-The Brain ships in five milestones. v1.0 is the full set, M1–M5.
+The Brain is the runtime underneath. You define a workflow as a Python file with named steps. The Brain runs it — on demand, on a cron schedule, on an HTTP webhook, or on a filesystem change — and persists every run to Postgres so you can inspect what happened. Steps can shell out, call a local LLM, query [Memory Vault](https://github.com/MihaiBuilds/memory-vault), or invoke any MCP server. The Brain is a **workflow orchestrator, not an AI agent** — it doesn't make autonomous decisions, it runs the workflow you authored with full visibility into each step.
 
-| Milestone | Scope | Status |
-|-----------|-------|--------|
-| M1 — Bare Runner | Run Python-defined workflows, persist every run to Postgres, inspect run history from the CLI | ✅ Done |
-| M2 — Triggers + State | Cron schedules, a long-running scheduler, workflows that read the previous run's output | ✅ Done |
-| M3 — Webhooks + File Watchers | Trigger workflows from HTTP webhooks and filesystem changes | ✅ Done |
-| M4 — MCP Tools + Multi-LLM | Call any MCP server as a workflow step; per-step LLM overrides; derive-your-own-image pattern | ✅ Done |
-| M5 — Polish + Launch | CI/CD, security pass, full docs, v1.0 release | 📋 Planned |
+---
 
-## What it will do (v1.0)
+## Status
 
-- Run workflows defined as Python files
-- Steps can be: Memory Vault REST calls, local LLM calls (LM Studio), or shell commands
-- Persistent run history in Postgres — every run logged with status and output
-- Triggers: manual (CLI), cron, webhooks, file watchers
-- Local LLM via LM Studio (OpenAI-compatible API)
-- MCP tool calling — workflows can call any MCP server as a step
+**v1.0 — released 2026-06-15.** First stable release of The Brain. Stable workflow runner, CLI, HTTP API with bearer auth, scheduler + watcher daemons with cron/webhook/file triggers, MCP tool integration, structured logging, and a redacting diagnostic bundler.
 
-## What it won't do (v1.0)
+Release notes: [GitHub Releases](https://github.com/MihaiBuilds/the-brain/releases). Build-in-public story: the [mihaibuilds.com blog series](https://mihaibuilds.com/blog).
 
-- Multi-user / team workflows (PRO tier)
-- Visual workflow builder (PRO tier)
-- Rich conditional branching with parallel steps (PRO tier)
-- Managed cloud version (PRO tier)
+Semver from here forward — the public surface (CLI commands, workflow file format, step types, trigger contracts, DB schema) is stable. Breaking changes only on a major version bump.
 
-Single-tenant, self-hosted, MIT-licensed.
+---
 
-## Quickstart
+## Quick Start (Docker)
 
 This walks the runner end to end: install, configure, write a workflow, run it, inspect the result.
 
@@ -212,6 +198,114 @@ Steps:
 
 This prints the run's status, timing, and every step's output in execution order.
 
+## No-Docker quick start
+
+If you prefer running without Docker:
+
+### Prerequisites
+
+- Python 3.11+
+- PostgreSQL 16+ (any database The Brain can connect to)
+
+### Setup
+
+```bash
+# Clone
+git clone https://github.com/MihaiBuilds/the-brain.git
+cd the-brain
+
+# Create virtual environment
+python -m venv .venv
+source .venv/bin/activate
+
+# Install dependencies
+pip install -e .
+
+# Configure
+cp .env.example .env
+# Edit .env with your PostgreSQL credentials
+
+# Run migrations
+brain migrate
+
+# Verify
+brain status
+```
+
+### Usage
+
+```bash
+# Run a workflow
+brain run examples/hello.py
+
+# Inspect run history
+brain history
+
+# Show one run in full
+brain show <run_id_prefix>
+```
+
+The scheduler daemon, file watcher daemon, and HTTP API are runnable the same way (`brain daemon`, `brain watcher`, `brain serve`) — each is a separate long-running process.
+
+## Features
+
+- **Run Python-defined workflows** from a CLI, persisted to Postgres so every run is inspectable later
+- **Four trigger types** — manual (CLI), cron, HMAC-authenticated webhooks, filesystem watchers
+- **Four step types** — shell, LLM (OpenAI-compatible), Memory Vault REST, MCP tool calling over stdio
+- **Per-step LLM overrides** — pick a different provider URL, model, API key, timeout, or max tokens per step
+- **Derive-your-own-image pattern** — compose The Brain with any MCP server (Memory Vault, GitHub MCP, Sentry MCP, your own) without bloating the stock image
+- **Separate processes per surface** — scheduler daemon, file watcher daemon, and HTTP API each in its own container, so one crash doesn't take the others down
+- **Single-tenant, self-hosted, MIT-licensed** — your data, your machine, your workflows
+
+## Architecture
+
+Three things are deliberate about this architecture:
+
+- **One database for state.** Run history, schedules, webhook secrets, watcher registrations all live in Postgres. No separate queue, no separate state store, no Redis to operate.
+- **Process boundary per trigger surface.** The scheduler daemon, the file watcher daemon, and the HTTP API are separate processes — each in its own container under its own compose profile. One crashes; the others keep running. Crash recovery is scoped to the surface that owns the run.
+- **Per-step spawn for MCP.** The Brain doesn't host any long-running MCP server. Each `McpToolStep` spawns a fresh subprocess for the duration of one tool call, completes the MCP `initialize` handshake, calls one tool, and tears the subprocess down. Isolation per call: a crashing MCP server only kills one step.
+
+See [ARCHITECTURE.md](ARCHITECTURE.md) for the deeper walk-through (process model, recovery semantics, substitution model, MCP transport choice).
+
+## Tech Stack
+
+- **Python 3.11+** — async backend with psycopg 3
+- **PostgreSQL** — single state engine across the ecosystem (workflow runs, schedules, webhook secrets, watcher registrations, daemon heartbeats)
+- **Click** — the CLI surface
+- **FastAPI + uvicorn** — the optional HTTP API for webhook triggers
+- **watchdog** — file system event observation for the watcher daemon
+- **MCP (Model Context Protocol)** — stdio transport for the `McpToolStep`
+- **Docker / Docker Compose** — one-command deployment with multiple profiles (`api`, `watcher`)
+- **Integrates with [Memory Vault](https://github.com/MihaiBuilds/memory-vault)** — either over its REST API (`MemoryVaultStep`) or over its MCP server (`McpToolStep` + derive-pattern)
+
+## How It Works
+
+### Workflow execution
+
+A workflow is a Python file defining a module-level `workflow` variable: a name plus a linear list of steps. The Brain imports the file, runs the steps top to bottom, and persists every run to Postgres. Each step's output (a string) is available to downstream steps via the `{previous.step_name}` placeholder. A step failure halts the workflow — the remaining steps don't run, the run row is persisted with the failure visible in `brain show <run_id>`. There is no continue-on-error in v1.0; if a workflow needs partial success semantics, the step author writes them explicitly into the step.
+
+### Trigger surfaces
+
+The Brain ships four trigger types, each owned by a different process:
+
+- **Manual** — `brain run path/to/workflow.py` runs the workflow once, on demand, in the current shell.
+- **Cron** — the scheduler daemon polls `workflow_schedules` every 10 seconds, fires due workflows sequentially in its own process, and advances `next_run_at` after each fire. SIGTERM gracefully shuts down after the current workflow finishes.
+- **Webhook** — the HTTP API exposes `POST /webhook/<name>` with HMAC-SHA256 signature verification. The `X-Brain-Signature: sha256=<hex>` header is GitHub-compatible. Webhooks are gated by an `THE_BRAIN_API_TOKEN` bearer at the boundary; the API refuses to start without one.
+- **File watcher** — the watcher daemon observes registered directories via the `watchdog` library, debounces events on a 500ms window per `(workflow, path)`, and fires the registered workflow with the file path in `{trigger.path}`. One container, one daemon, one process per host.
+
+All three persistent triggers (cron, webhook, file) share the same `workflow_runs` table. `brain history`, `brain show`, and `brain list-triggers` give a unified view across all four trigger types.
+
+### Substitution model
+
+Step output flows downstream via `{previous.X}` and `{trigger.X}` placeholders. The substitution is **string-only and flat** — no nested-field access, no recursion into dict values. `{previous.recall}` becomes the recall step's output as a single string; if a downstream step needs a JSON field, an upstream step writes it directly to its output. This keeps the contract simple and the substitution surface inspectable.
+
+Two boundaries are sharp:
+
+- `McpToolStep.tool` is **never substituted** — it's an MCP protocol method name, not user data. The workflow file is the orchestrator; the LLM doesn't decide which tool to call.
+- `args` **keys** are never substituted — only values, and only string values. Non-string values (ints, bools, nested dicts) pass through unchanged.
+
+These are pinned by tests so a future refactor can't quietly drop them.
+
 ## Run workflows on a schedule
 
 The Quickstart above runs workflows on demand with `brain run`. The Brain also ships a long-running **scheduler daemon** that fires registered workflows on a cron schedule, with no extra setup — the daemon is already running as PID 1 inside the `brain` container, polling for due workflows every 10 seconds.
@@ -312,7 +406,7 @@ LLMStep(
 )
 ```
 
-On the very first run there is no previous successful run, so `{previous.summary}` is unresolvable — that step fails with a clear error, same strict-by-design behavior as M1's intra-run `{step_name}` placeholder. Once one run has succeeded, every subsequent run sees its output.
+On the very first run there is no previous successful run, so `{previous.summary}` is unresolvable — that step fails with a clear error, same strict-by-design behavior as the intra-run `{step_name}` placeholder. Once one run has succeeded, every subsequent run sees its output.
 
 ### Daemon lifecycle
 
@@ -573,13 +667,117 @@ file      markdown-watcher        yes       /data/watched
 
 Cron schedules from `brain register` appear here too once registered.
 
-## Tech
+## Workflow lifecycle hooks
 
-- Python 3.11+
-- PostgreSQL (single state engine across the ecosystem)
-- Docker / Docker Compose for deployment
-- Integrates with Memory Vault via its REST API
+The Brain has a small number of named extension points worth knowing about. Each is documented in detail elsewhere; this section names them in one place so the inspectable surface is visible.
+
+- **Per-step spawn lifecycle (`McpToolStep`)** — every MCP step spawns its server subprocess at step start, runs the MCP `initialize` handshake eagerly, invokes one `tools/call`, and kills the subprocess at step end. No shared client. No pooling. The per-step timeout covers handshake + call from the caller's perspective. See [Call an MCP tool from a workflow](#call-an-mcp-tool-from-a-workflow).
+- **`{previous.X}` substitution boundary** — string-typed step outputs flow into downstream string fields via `{previous.step_name}`. Nested-field access (e.g. `{previous.X.foo.bar}`) is NOT supported in v1.0 — the value is a flat string after serialization. See [Substitution boundaries](#substitution-boundaries).
+- **`{trigger.X}` substitution boundary** — webhook/file-watcher payloads flow into workflow steps via `{trigger.event}`, `{trigger.body}`, `{trigger.headers.X}`, `{trigger.path}`. Workflows triggered manually or by cron fail with a clear error if they reference `{trigger.X}`. See [React to webhooks](#react-to-webhooks) and [React to file changes](#react-to-file-changes).
+- **`tool` name + `args` keys are NEVER substituted** — only string values inside `args` substitute. The MCP method name and argument schema are protocol-level identifiers, not user data. Locked behavior; tested.
+- **`isError: true` → step failure** — when an MCP server returns a JSON-RPC success containing `isError: true` in its result, The Brain treats it as a failed step (same as a non-zero shell exit code). The first text content block becomes the step's error message.
+- **Non-zero shell exit → step failure** — `ShellStep` captures stdout into `StepResult.output`; non-zero exit fails the step and halts the workflow.
+- **First failure halts the workflow** — no continue-on-error in v1.0. The remaining steps don't run. The run row is persisted with the failure visible in `brain show <run_id>`.
+- **stderr is logged, not in `StepResult.output`** — MCP server stderr is captured to a rolling ~1 KB tail and logged at step boundary. Workflow data and debug data are different surfaces; a `{previous.X}` reference never includes stderr noise.
+
+## Troubleshooting
+
+When something goes wrong, `brain diagnose` bundles your environment, version, status, and recent logs into a single zip suitable for attaching to a bug report:
+
+```bash
+brain diagnose
+```
+
+The bundle lands in the current directory as `brain-diagnostic-YYYY-MM-DD-HHMMSS.zip`. It includes a `MODE.txt` marker (Docker vs. no-Docker), `os_info.txt`, `brain_version.txt`, the output of `brain status`, filtered non-secret environment variables, and (under Docker) the last 1000 lines of the brain container and the last 500 lines of the db container.
+
+Secrets are redacted by an allow-list — `DB_PASSWORD`, `LLM_API_KEY`, `MEMORY_VAULT_TOKEN`, and `THE_BRAIN_API_TOKEN` values are never written into the bundle; only their presence is recorded. The bundle ships with a `REDACTED_FIELDS.txt` explainer.
+
+Logs are included unfiltered. If a workflow has logged a secret to stdout, that string will be in the bundle. **Review every file in the zip before posting it to a public issue tracker.**
+
+Structured JSON logging is on by default in the Docker containers (`LOG_FORMAT=json`). Set `LOG_FORMAT=keyvalue` to switch to human-readable output when tailing logs locally.
+
+## Limitations
+
+### What v1.0 doesn't ship
+
+Out of scope for v1.0 by design — these are not on the roadmap, and may come in a later release if there's real demand signal:
+
+- Multi-user / team workflows
+- Visual workflow builder
+- Rich conditional branching with parallel steps
+- Managed cloud version
+
+### Honest v1.0 limits
+
+What v1.0 doesn't do well, named openly so you find out before deploying:
+
+- **Reasoning-style LLMs need bigger budgets.** Default `timeout_seconds=60` and the LLM's own default `max_tokens` fail on qwen 3.x+ / o1-style / R1-style / QwQ models — they consume token budget on internal reasoning before producing visible content. Set `timeout_seconds=600` and `max_tokens=8000+` for a 9B reasoning model. Instruct models (Ministral, Mistral Instruct, Llama Instruct) don't have this behavior.
+- **MCP stdio transport only.** HTTP transport (the streamable-HTTP MCP variant) is not in v1.0. Brings its own auth surface (Bearer / mTLS / OAuth) that v1.0 doesn't address.
+- **Single-instance scheduler + watcher per host.** No HA. If the daemon dies, the workflows it schedules don't fire until it's back. Docker healthchecks (`brain daemon-status`, `brain watcher-status`) let your orchestrator restart it.
+- **Workflow files are trusted Python imports.** The Brain `import`s your workflow file; arbitrary top-level Python runs at load time. v1.0's security posture is "workflow authors are trusted; don't run untrusted workflow files." This is not a sandbox.
+- **LM Studio is the only LLM provider tested for v1.0.** Other OpenAI-compatible providers (Ollama, vLLM, llama.cpp server, OpenAI proper) may work via the same wire format but are not promised in v1.0.
+- **English-only error messages.** No i18n.
+- **No nested-field substitution.** `{previous.X.foo}` and `{trigger.body.foo}` are not path walks — the value is a flat string. If you need to pluck a field, do it in an upstream step that emits the field directly.
+- **No `tools/list` MCP discovery.** Workflow authors are expected to know the tool name and args shape in advance, the same way they know what shell commands they're calling.
+- **No per-run MCP server pooling.** Per-step spawn is the lifecycle. Two `McpToolStep` calls to the same server in one run produce two distinct subprocess PIDs and pay the cold-start cost twice.
+
+## PRO tier (planned)
+
+Team features, advanced workflow shapes (parallel branches, conditional fan-out), a managed/hosted tier. The free / open-source core stays free forever — open-core, not bait-and-switch.
+
+A PRO tier ships only if there's real demand signal after v1.0.
+
+## FAQ
+
+### How is this different from n8n / Temporal / Airflow / Dagster?
+
+Different shape, different audience.
+
+- **n8n** is a visual node-based workflow tool aimed at non-developers integrating SaaS apps. The Brain is code-first (workflows are Python files) and aimed at developers who want a self-hosted runtime they can read end to end.
+- **Temporal** is a distributed durable-execution engine with workers, activities, signals, and replay semantics. Powerful and large. The Brain is single-host, in-process, single-tenant — closer to "cron with state and triggers" than to a distributed workflow engine.
+- **Airflow** is a DAG scheduler for data pipelines with operators, executors, and a web UI. Heavy. The Brain has no DAG (workflows are linear), no executors abstraction, no web UI.
+- **Dagster** is asset-oriented data orchestration with strong typing for pipeline outputs. The Brain is generic-script-oriented — shell, LLM, MCP tool, REST call — not data-asset-oriented.
+
+If you're building a data warehouse, use Airflow or Dagster. If you're orchestrating a SaaS automation by clicking nodes, use n8n. If you're running a distributed business process, use Temporal. If you're a developer who wants a small, observable, self-hosted runtime for "this Python workflow on a cron / webhook / file event" — that's The Brain.
+
+### Do I need to know Python to use it?
+
+Yes. Workflows are Python files defining a module-level `workflow` variable. You don't need deep Python; the workflow file is a list of dataclass-shaped steps. But you do need to be comfortable writing and editing Python.
+
+### Can I use The Brain without Memory Vault or without an LLM?
+
+Yes to both.
+
+- **Without Memory Vault:** drop `MemoryVaultStep` and `McpToolStep` (for MV's MCP server). The Brain still runs shell + LLM workflows on all four trigger types.
+- **Without an LLM:** drop `LLMStep`. The Brain still runs shell workflows, MCP tool workflows, and Memory Vault REST workflows on all four trigger types.
+
+Each integration is optional. The stock image bundles ZERO MCP servers and assumes no LLM is running by default — both are opt-in via configuration.
+
+### What does "workflow orchestrator, not agent" actually mean?
+
+The workflow file is the orchestrator. The LLM step just transforms text. The LLM does NOT decide which tool to call, which step to run next, or when to stop — that's all in the workflow file. If a workflow wants "LLM picks an MCP tool," it wires that explicitly via `{previous.X}` substitution into an argument; the `tool` name itself is locked NOT-substituted. The agentic glue, if any, is the workflow author's code.
+
+This is by design. The Brain ships an inspectable runtime, not a black box.
+
+### Is this production-ready?
+
+v1.0 is the first stable release. The runtime, scheduler, watcher, and API all run with a hermetic test suite (300+ tests against real Postgres, no mocks at integration boundaries) and a real end-to-end ecosystem-integration test against Memory Vault. The semver promise on the public surface holds from v1.0 forward.
+
+"Production-ready" is a marketing claim a single maintainer can't make for someone else's environment. What's true: v1.0 is what The Brain shipped with, the failure modes are documented, the limitations are honest, and the same discipline that built each subsystem ships in the v1.0 cut.
+
+### Can multiple users share workflows in v1.0?
+
+No. v1.0 is single-tenant: one Postgres database per deployment, one shared scheduler, one shared watcher, one shared API token. Team features (per-user workflows, per-user run history, RBAC, per-user webhook secrets) are a candidate for a future PRO tier.
 
 ## License
 
 MIT — see [LICENSE](LICENSE).
+
+## Follow the Build
+
+- Website: [mihaibuilds.com](https://mihaibuilds.com)
+- Blog: [mihaibuilds.com/blog](https://mihaibuilds.com/blog)
+- GitHub: [@MihaiBuilds](https://github.com/MihaiBuilds)
+- X: [@mihaibuilds](https://x.com/mihaibuilds)
+
+> Watch the repo to follow along.

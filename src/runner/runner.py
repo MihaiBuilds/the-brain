@@ -33,6 +33,7 @@ from uuid import UUID, uuid4
 
 from src.db import execute_query, fetch_one
 from src.executors.base import StepResult, get_executor
+from src.logging_config import bind_run_id
 from src.runner.models import WorkflowRun
 from src.workflow.models import Step, Workflow
 
@@ -189,9 +190,7 @@ def _resolve_step(
         changed = False
         for key, value in original_args.items():
             if isinstance(value, str):
-                substituted = _substitute(
-                    value, results, previous_steps, trigger_context
-                )
+                substituted = _substitute(value, results, previous_steps, trigger_context)
                 resolved_args[key] = substituted
                 if substituted != value:
                     changed = True
@@ -257,84 +256,89 @@ async def run_workflow(
     run_id = uuid4()
     started_at = datetime.now(UTC)
 
-    previous_run_id, previous_steps = await _lookup_previous_run(workflow.name)
-    planned_steps = [{"name": s.name, "type": s.type} for s in workflow.steps]
+    # Bind the run ID into structlog's contextvars so every log line
+    # emitted by any module during this workflow run carries the field.
+    # Existing ``logger.info("Run %s started", run_id)`` calls keep working;
+    # the structured ``run_id`` field is added on top.
+    with bind_run_id(run_id):
+        previous_run_id, previous_steps = await _lookup_previous_run(workflow.name)
+        planned_steps = [{"name": s.name, "type": s.type} for s in workflow.steps]
 
-    await execute_query(
-        """
-        INSERT INTO workflow_runs
-            (id, workflow_name, workflow_file_path, started_at, status,
-             previous_run_id, planned_steps, trigger_context)
-        VALUES (%s, %s, %s, %s, 'running', %s, %s, %s)
-        """,
-        (
-            run_id,
-            workflow.name,
-            file_path,
-            started_at,
-            previous_run_id,
-            json.dumps(planned_steps),
-            json.dumps(trigger_context) if trigger_context is not None else None,
-        ),
-    )
-    logger.info("Run %s started — workflow %r", run_id, workflow.name)
+        await execute_query(
+            """
+            INSERT INTO workflow_runs
+                (id, workflow_name, workflow_file_path, started_at, status,
+                 previous_run_id, planned_steps, trigger_context)
+            VALUES (%s, %s, %s, %s, 'running', %s, %s, %s)
+            """,
+            (
+                run_id,
+                workflow.name,
+                file_path,
+                started_at,
+                previous_run_id,
+                json.dumps(planned_steps),
+                json.dumps(trigger_context) if trigger_context is not None else None,
+            ),
+        )
+        logger.info("Run %s started — workflow %r", run_id, workflow.name)
 
-    results: dict[str, StepResult] = {}
-    status = "success"
-    error: str | None = None
+        results: dict[str, StepResult] = {}
+        status = "success"
+        error: str | None = None
 
-    for step in workflow.steps:
-        try:
-            resolved = _resolve_step(step, results, previous_steps, trigger_context)
-        except PlaceholderError as e:
-            result = StepResult(step_name=step.name, success=False, error=str(e))
-        else:
+        for step in workflow.steps:
             try:
-                result = await get_executor(resolved).execute(resolved)
-            except Exception as e:  # an executor should not raise — be safe.
-                logger.exception("Step %r raised unexpectedly", step.name)
-                result = StepResult(
-                    step_name=step.name,
-                    success=False,
-                    error=f"executor raised unexpectedly: {e}",
-                )
+                resolved = _resolve_step(step, results, previous_steps, trigger_context)
+            except PlaceholderError as e:
+                result = StepResult(step_name=step.name, success=False, error=str(e))
+            else:
+                try:
+                    result = await get_executor(resolved).execute(resolved)
+                except Exception as e:  # an executor should not raise — be safe.
+                    logger.exception("Step %r raised unexpectedly", step.name)
+                    result = StepResult(
+                        step_name=step.name,
+                        success=False,
+                        error=f"executor raised unexpectedly: {e}",
+                    )
 
-        results[step.name] = result
-        if on_step_complete is not None:
-            on_step_complete(result)
-        if not result.success:
-            status = "failed"
-            error = f"step {step.name!r} failed: {result.error}"
-            logger.warning("Run %s halted — %s", run_id, error)
-            break
+            results[step.name] = result
+            if on_step_complete is not None:
+                on_step_complete(result)
+            if not result.success:
+                status = "failed"
+                error = f"step {step.name!r} failed: {result.error}"
+                logger.warning("Run %s halted — %s", run_id, error)
+                break
 
-    ended_at = datetime.now(UTC)
-    # An ordered list — one entry per step that ran, in execution order.
-    # A JSON object would not preserve order; the order is part of the data.
-    output = [
-        {"name": name, "success": r.success, "output": r.output} for name, r in results.items()
-    ]
+        ended_at = datetime.now(UTC)
+        # An ordered list — one entry per step that ran, in execution order.
+        # A JSON object would not preserve order; the order is part of the data.
+        output = [
+            {"name": name, "success": r.success, "output": r.output} for name, r in results.items()
+        ]
 
-    await execute_query(
-        """
-        UPDATE workflow_runs
-        SET ended_at = %s, status = %s, output = %s, error = %s
-        WHERE id = %s
-        """,
-        (ended_at, status, json.dumps(output), error, run_id),
-    )
-    logger.info("Run %s ended — %s", run_id, status)
+        await execute_query(
+            """
+            UPDATE workflow_runs
+            SET ended_at = %s, status = %s, output = %s, error = %s
+            WHERE id = %s
+            """,
+            (ended_at, status, json.dumps(output), error, run_id),
+        )
+        logger.info("Run %s ended — %s", run_id, status)
 
-    return WorkflowRun(
-        id=run_id,
-        workflow_name=workflow.name,
-        workflow_file_path=file_path,
-        started_at=started_at,
-        ended_at=ended_at,
-        status=status,
-        output=output,
-        error=error,
-        previous_run_id=previous_run_id,
-        planned_steps=planned_steps,
-        trigger_context=trigger_context,
-    )
+        return WorkflowRun(
+            id=run_id,
+            workflow_name=workflow.name,
+            workflow_file_path=file_path,
+            started_at=started_at,
+            ended_at=ended_at,
+            status=status,
+            output=output,
+            error=error,
+            previous_run_id=previous_run_id,
+            planned_steps=planned_steps,
+            trigger_context=trigger_context,
+        )

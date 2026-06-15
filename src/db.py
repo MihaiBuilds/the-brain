@@ -116,8 +116,12 @@ async def health_check() -> dict[str, Any]:
         return {"status": "unhealthy", "error": str(e)}
 
 
-async def run_migrations() -> None:
-    """Run all SQL migration files in order. Tracks applied migrations."""
+async def run_migrations() -> int:
+    """Run all SQL migration files in order. Tracks applied migrations.
+
+    Returns the number of new migrations applied in this call. Zero means
+    the schema was already up to date.
+    """
     pool = await get_pool()
     async with pool.connection() as conn:
         # Create tracking table if it doesn't exist
@@ -138,7 +142,7 @@ async def run_migrations() -> None:
         pending = [m for m in migration_files if m.name not in applied]
         if not pending:
             logger.info("No pending migrations.")
-            return
+            return 0
 
         for migration in pending:
             logger.info("Applying migration: %s", migration.name)
@@ -150,3 +154,5 @@ async def run_migrations() -> None:
             )
             await conn.commit()
             logger.info("Migration applied: %s", migration.name)
+
+        return len(pending)
