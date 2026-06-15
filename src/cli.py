@@ -202,7 +202,7 @@ async def _history(limit: int, workflow_name: str | None, status: str | None) ->
             {where}
             ORDER BY started_at DESC
             LIMIT %s
-            """,
+            """,  # nosec B608 — `where` is a fixed-template assembly of `column = %s` clauses; user values flow through `params` and `%s`, never interpolated into the SQL string
             tuple(params),
         )
     finally:
@@ -397,7 +397,7 @@ async def _list(filter_enabled: bool, filter_disabled: bool, workflow_name: str 
          LEFT JOIN workflow_runs r ON r.id = s.last_run_id
             {where}
           ORDER BY s.workflow_name
-            """,
+            """,  # nosec B608 — `where` is a fixed-template assembly of `column = %s` clauses; user values flow through `params` and `%s`, never interpolated into the SQL string
             tuple(params),
         )
     finally:
@@ -547,7 +547,7 @@ async def _daemon_status() -> None:
 
 @cli.command()
 @click.option("--port", default=8001, show_default=True, help="HTTP port to bind.")
-@click.option("--host", default="0.0.0.0", show_default=True, help="Interface to bind.")
+@click.option("--host", default="0.0.0.0", show_default=True, help="Interface to bind.")  # nosec B104 — 0.0.0.0 is required for the Docker container case; bearer auth via THE_BRAIN_API_TOKEN is mandatory, and operators are expected to reverse-proxy with TLS for any non-localhost exposure (documented in SECURITY.md)
 def serve(port: int, host: str) -> None:
     """Run the HTTP API.
 
