@@ -88,6 +88,7 @@ Workflow definitions are code the operator wrote. Run history (step output, erro
 | Threat | Why deferred |
 |---|---|
 | Multi-tenant isolation | The Brain v1.0 is single-user. PRO introduces multi-user with workspace isolation |
+| Path confinement on HTTP `/run` workflow_path | The `/run` endpoint accepts any host filesystem path that the bearer-token holder supplies. By design at v1.0: the token-holder is the operator, who already has arbitrary code execution via the legitimate workflow flow. Flagged by CodeQL as path-traversal; dismissed with this justification. Hardening planned when the threat model changes (multi-tenant, scoped tokens, or public hosting) |
 | Workflow sandboxing | Workflows are trusted Python by design — sandboxing arbitrary Python is an unsolved problem and not the goal of v1.0 |
 | Encryption at rest | Operator's responsibility — use full-disk encryption on the host, or a managed Postgres with TDE |
 | External penetration audit | Single-maintainer pre-revenue product; revisit post-launch when there's budget |
@@ -133,3 +134,14 @@ Public-tier security tooling enabled in CI:
 - **Bandit** (Python) — runs locally before each release; `# nosec` annotations are in-source with justifications.
 - **CodeQL** ([.github/workflows/codeql.yml](.github/workflows/codeql.yml)) — security-extended query pack, scans Python on push, PR, and weekly cron.
 - **Dependabot** ([.github/dependabot.yml](.github/dependabot.yml)) — weekly checks on Python, GitHub Actions, and Docker base images. Minor and patch updates grouped to reduce PR noise.
+
+### CodeQL dismissal posture
+
+CodeQL findings are read against The Brain's threat model, not against generic web-app assumptions. A pattern that flags in a multi-tenant SaaS context (e.g. user-controlled filesystem paths) is evaluated honestly here: in a single-tenant, bearer-token-protected, operator-owned deploy, the same pattern may not represent a real exploit.
+
+When a finding is dismissed, the dismissal reason on the GitHub alert names the specific justification. Five findings were dismissed at v1.0 launch (2026-06-16):
+
+- **1 × High** `py/path-injection` at `src/workflow/loader.py:31` — bearer-token-protected operator-owned `/run` endpoint; token-holder already has arbitrary-code execution via the legitimate workflow flow. Hardening tracked for a future release.
+- **4 × Medium** `py/log-injection` at `src/api/app.py:187, 196, 235, 254` — all four sites use `%r` (Python's `repr()` format), which escapes CR/LF before the value reaches the log. CodeQL's rule does not model `%r` as a sanitizer; the alerts are scanner false-positives.
+
+If the threat model changes (multi-tenant deploy, scoped tokens, public hosting), these dismissals will be re-evaluated and the High will be fixed first.
