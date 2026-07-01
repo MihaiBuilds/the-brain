@@ -40,7 +40,7 @@ jobs:
       THE_BRAIN_API_TOKEN: ci-test-token
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Set up Python 3.11
         uses: actions/setup-python@v6
